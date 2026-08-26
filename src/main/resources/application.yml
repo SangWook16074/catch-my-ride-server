@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: catchmyride-server
+
+spike:
+  polling:
+    interval: PT30S       # 폴링 주기 (실측용 — 본편 FR-204와는 별개)
+    window-start: "06:30" # 실측 시간대 시작 (Asia/Seoul)
+    window-end: "09:30"
+    weekdays-only: true
+  log-dir: ./spike-logs
+  keys:
+    # 공공데이터포털 "Encoding" 인증키를 그대로 넣는다 (코드에서 재인코딩하지 않음)
+    data-go-kr: ${DATA_GO_KR_KEY:}
+    # 서울열린데이터광장 인증키
+    seoul-open-data: ${SEOUL_OPEN_DATA_KEY:}
+  targets:
+    # 베타 타겟 노선 확정 후 채울 것 (TASK.md P0-3 참조)
+    seoul-bus: []       # TOPIS arsId — 정류소 번호 5자리, 예: "23285"
+    gyeonggi-bus: []    # GBIS stationId, 예: "228000723"
+    subway: []          # 역명, 예: "여의도"
