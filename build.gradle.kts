@@ -20,6 +20,7 @@ repositories {
 
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
+	implementation("org.springframework.boot:spring-boot-starter-actuator") // /actuator/health — compose healthcheck·UptimeRobot 감시용
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	implementation("tools.jackson.dataformat:jackson-dataformat-xml") // TOPIS·GBIS는 XML 응답

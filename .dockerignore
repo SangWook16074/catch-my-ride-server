@@ -1,0 +1,11 @@
+build/
+.gradle/
+.idea/
+.omc/
+.kotlin/
+spike-logs/
+.env
+.env.*
+!.env.example
+TODO.md
+HELP.md
