@@ -29,13 +29,23 @@ else
     sudo dnf install -y -q docker
     echo "✔ docker 설치 (dnf)"
   fi
-  # Amazon Linux에는 compose 플러그인 패키지가 없어 직접 설치
+  # Amazon Linux에는 compose·buildx 최신 플러그인 패키지가 없어 직접 설치
+  # (/usr/local/lib/docker/cli-plugins가 배포판 기본 경로보다 우선 탐색된다)
+  sudo mkdir -p /usr/local/lib/docker/cli-plugins
   if ! docker compose version > /dev/null 2>&1 && ! sudo docker compose version > /dev/null 2>&1; then
-    sudo mkdir -p /usr/local/lib/docker/cli-plugins
     sudo curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
       -o /usr/local/lib/docker/cli-plugins/docker-compose
     sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
     echo "✔ compose 플러그인 설치"
+  fi
+  # 배포판 동봉 buildx가 낡아 compose build가 거부하는 경우가 있어 최신으로 교체
+  if [ ! -f /usr/local/lib/docker/cli-plugins/docker-buildx ]; then
+    ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64;; aarch64) ARCH=arm64;; esac
+    BUILDX_URL=$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest \
+      | grep -oE "https://github.com/docker/buildx/releases/download/[^\"]*linux-$ARCH" | head -1)
+    sudo curl -fsSL "$BUILDX_URL" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+    sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+    echo "✔ buildx 플러그인 설치 ($(sudo docker buildx version 2>/dev/null | head -1))"
   fi
 fi
 sudo systemctl enable --now docker 2>/dev/null || true
