@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>놓치지마 서버 API 문서</title>
+  <!-- swagger-ui webjar(빌드에 포함)에서 로드 — 외부 CDN 의존 없음. 버전은 build.gradle.kts와 맞출 것 -->
+  <link rel="stylesheet" href="/webjars/swagger-ui/5.25.3/swagger-ui.css">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="/webjars/swagger-ui/5.25.3/swagger-ui-bundle.js"></script>
+<script>
+  window.ui = SwaggerUIBundle({
+    url: "/openapi.yaml",
+    dom_id: "#swagger-ui",
+    presets: [SwaggerUIBundle.presets.apis],
+    layout: "BaseLayout",
+    defaultModelsExpandDepth: 1,
+    tryItOutEnabled: true
+  });
+</script>
+</body>
+</html>

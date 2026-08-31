@@ -21,10 +21,15 @@ repositories {
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
 	implementation("org.springframework.boot:spring-boot-starter-actuator") // /actuator/health — compose healthcheck·UptimeRobot 감시용
+	implementation("org.springframework.boot:spring-boot-starter-jdbc") // CommuteSetting·BoardingFeedback 저장 (S-1/S-3)
+	runtimeOnly("org.postgresql:postgresql")
+	testRuntimeOnly("com.h2database:h2") // 테스트는 인메모리 H2(PostgreSQL 모드) — src/test/resources/application.yml
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	implementation("tools.jackson.dataformat:jackson-dataformat-xml") // TOPIS·GBIS는 XML 응답
+	implementation("org.webjars:swagger-ui:5.25.3") // /swagger-ui.html — openapi.yaml(API.md 계약) 뷰어. springdoc은 Boot 4 미지원이라 정적 서빙
 	testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
+	testImplementation("tools.jackson.dataformat:jackson-dataformat-yaml") // openapi.yaml 문법 검증(ApiDocsEndpointTest)
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

@@ -1,0 +1,334 @@
+# 놓치지마 서버 API — OpenAPI 스펙
+# 원천 계약: 루트 API.md (v0.2, 2026-08-28) — API.md가 바뀌면 이 파일도 함께 갱신한다.
+# 열람: /swagger-ui.html (로컬 http://localhost:5000/swagger-ui.html)
+openapi: 3.0.3
+info:
+  title: 놓치지마 서버 API
+  version: "0.2"
+  description: |
+    출근길 출발 타이밍 알림 미니앱(앱인토스)의 파트너 서버 API.
+    - 원천 계약 문서: 저장소 루트 `API.md` (v0.2) — 이 스펙은 그 계약의 Swagger 표현이다.
+    - 유저는 전체 정류장/역(서울·경기 버스 + 수도권 지하철)에서 검색·선택한다 (2026-08-28 오너 결정, 명세서 §9).
+    - 구현 상태 (2026-08-28): §1·§2·§3·§5 전부 구현·배포됨. 인증은 토스 로그인 연동(clientId) 전까지 dev 고정 유저로 동작 — Authorization 헤더는 아직 무시된다.
+servers:
+  - url: https://catchmyride.hansw.dev
+    description: 운영 (Oracle VM + Caddy HTTPS)
+  - url: http://localhost:5000
+    description: 로컬 Docker
+security:
+  - tossBearer: []
+tags:
+  - name: commute-setting
+    description: 통근 설정 (유저당 1개, MVP)
+  - name: arrivals
+    description: 라이브 뷰 도착 정보 (FR-501/502)
+  - name: feedback
+    description: 탑승 피드백 — North Star 측정 (FR-601)
+  - name: stops
+    description: 정류장/역 전체 검색 (온보딩 FR-102·103)
+
+paths:
+  /api/v1/commute-setting:
+    get:
+      tags: [commute-setting]
+      summary: 통근 설정 조회
+      responses:
+        "200":
+          description: 저장된 통근 설정
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommuteSetting" }
+        "404": { $ref: "#/components/responses/SettingNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [commute-setting]
+      summary: 통근 설정 등록·수정 (업서트)
+      description: 유저당 1개이므로 생성·수정 모두 PUT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommuteSetting" }
+      responses:
+        "200":
+          description: 저장된 객체 반환
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommuteSetting" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [commute-setting]
+      summary: 통근 설정 삭제 (알림도 중지)
+      responses:
+        "204": { description: 삭제 완료 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/arrivals:
+    get:
+      tags: [arrivals]
+      summary: 라이브 뷰 도착 정보
+      description: |
+        저장된 통근 설정의 정류장·노선 기준으로 서버가 공공 API(캐시 TTL 15~30초)를 조회해 내려준다.
+        클라이언트는 15~30초 간격 폴링 (FR-204). 오프라인 시 마지막 응답 + fetchedAt 유지 표시 (NFR-07).
+      responses:
+        "200":
+          description: 도착 정보 목록 (secondsToArrival 오름차순, null 마지막)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArrivalsResponse" }
+        "404": { $ref: "#/components/responses/SettingNotFound" }
+        "503":
+          description: 공공 API 장애 — 클라이언트는 "실시간 정보 없음" 표시 (NFR-03)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/boarding-feedback:
+    post:
+      tags: [feedback]
+      summary: 탑승 피드백 원탭 제출
+      description: 푸시 수신 후 "탔어요/놓쳤어요" — 같은 notifiedDate 재제출 시 마지막 값으로 갱신.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BoardingFeedbackRequest" }
+      responses:
+        "201":
+          description: 기록 완료
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recorded: { type: boolean, example: true }
+        "400":
+          description: 그날 알림 발송 이력이 없음
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stops/search:
+    get:
+      tags: [stops]
+      summary: 정류장/역 전체 검색
+      description: |
+        온보딩 FR-102용. 서울 버스(TOPIS 정류소명 검색) + 경기 버스(GBIS) + 수도권 지하철(서버 내장 역 목록)
+        세 소스를 병렬 조회해 통합한다. 제한된 목록 제시 금지 (명세서 §9, 2026-08-28 오너 결정).
+        이 엔드포인트만 온보딩 중 통근 설정 없이도 호출 가능 (404 SETTING_NOT_FOUND 없음).
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+          example: 여의도
+      responses:
+        "200":
+          description: 소스당 최대 10건, 정확 일치 우선
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StopSearchResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stops/routes:
+    get:
+      tags: [stops]
+      summary: 정류장 경유 노선 조회
+      description: 온보딩 FR-103용 — 선택한 정류장에서 타는 노선 선택지.
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/StopType" }
+        - name: stopId
+          in: query
+          required: true
+          schema: { type: string }
+          example: "19284"
+      responses:
+        "200":
+          description: 노선 목록
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StopRoutesResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    tossBearer:
+      type: http
+      scheme: bearer
+      description: 토스 로그인 accessToken — 서버가 토스 API로 검증 후 userKey 식별. 클라이언트는 userKey를 직접 보내지 않는다.
+  responses:
+    SettingNotFound:
+      description: 통근 설정 미등록 — 온보딩으로 유도
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { code: SETTING_NOT_FOUND, message: 통근 설정이 없습니다 }
+    InvalidRequest:
+      description: 필드 검증 실패 — message에 상세
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { code: INVALID_REQUEST, message: 필드 검증 실패 }
+    Unauthorized:
+      description: 토스 토큰 없음/만료 — 클라이언트는 토스 재로그인
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { code: UNAUTHORIZED, message: 인증 실패 }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: SETTING_NOT_FOUND }
+        message: { type: string, example: 통근 설정이 없습니다 }
+    StopType:
+      type: string
+      enum: [SEOUL_BUS, GYEONGGI_BUS, SUBWAY]
+      description: SEOUL_BUS(stopId=arsId 5자리) / GYEONGGI_BUS(stopId=GBIS stationId) / SUBWAY(stopId=역명)
+    DayOfWeek:
+      type: string
+      enum: [MON, TUE, WED, THU, FRI, SAT, SUN]
+    CommuteSetting:
+      type: object
+      required: [home, stops, walkMinutes, notificationMode, bufferMinutes, activeDays]
+      properties:
+        home:
+          type: object
+          description: 집 위치 위경도 (Granite getCurrentLocation 또는 지도 선택)
+          required: [latitude, longitude]
+          properties:
+            latitude: { type: number, example: 37.5219 }
+            longitude: { type: number, example: 126.9245 }
+        stops:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/CommuteStop" }
+        walkMinutes:
+          type: integer
+          description: 집→정류장 도보 시간(분). 유저 직접 입력 (FR-104)
+          example: 8
+        notificationMode:
+          type: string
+          enum: [FIXED, RECOMMENDED]
+          description: ⓐ FIXED 정시 / ⓑ RECOMMENDED 추천 — 기본값 없음, 온보딩에서 선택
+        fixedDepartureTime:
+          type: string
+          nullable: true
+          description: '"HH:mm" — 모드 ⓐ일 때 필수, ⓑ면 null'
+          example: "08:20"
+        commuteWindow:
+          type: object
+          nullable: true
+          description: 모드 ⓑ일 때 필수, ⓐ면 null
+          properties:
+            start: { type: string, example: "07:30" }
+            end: { type: string, example: "09:00" }
+        bufferMinutes:
+          type: integer
+          description: 여유 버퍼(분). 온보딩에서 유저가 반드시 선택 — 서버 기본값 강제 금지 (FR-302)
+          example: 3
+        activeDays:
+          type: array
+          items: { $ref: "#/components/schemas/DayOfWeek" }
+          description: 알림 적용 요일 — 미포함 요일은 미발송 (FR-405)
+    CommuteStop:
+      type: object
+      required: [type, stopId, displayName, routes]
+      properties:
+        type: { $ref: "#/components/schemas/StopType" }
+        stopId: { type: string, example: "19284" }
+        displayName: { type: string, example: 여의도환승센터 }
+        routes:
+          type: array
+          minItems: 1
+          items: { type: string }
+          example: ["720", "261"]
+    ArrivalsResponse:
+      type: object
+      required: [fetchedAt, realtimeAvailable, walkMinutes, arrivals]
+      properties:
+        fetchedAt:
+          type: string
+          format: date-time
+          description: 서버가 공공 API에서 받아온 시각 — 화면에 "마지막 갱신 시각"으로 표시 (FR-501, NFR-07)
+        realtimeAvailable:
+          type: boolean
+          description: false면 공공 API 장애/정보 없음 — "실시간 정보 없음" 명시 (NFR-03)
+        walkMinutes: { type: integer, example: 8 }
+        arrivals:
+          type: array
+          items: { $ref: "#/components/schemas/Arrival" }
+    Arrival:
+      type: object
+      properties:
+        stopDisplayName: { type: string, example: 여의도환승센터 }
+        routeName: { type: string, example: "720" }
+        secondsToArrival:
+          type: integer
+          nullable: true
+          description: 도착까지 남은 초. null = 실시간 정보 없음 — 아는 척 금지
+          example: 540
+        remainingStops: { type: integer, nullable: true, example: 3 }
+        isExpress:
+          type: boolean
+          nullable: true
+          description: 지하철 급행 여부(버스는 null) — 급행/일반 구분 표시 (FR-203)
+        boardable:
+          type: boolean
+          description: secondsToArrival ≥ 도보 시간이면 true (FR-303/304)
+        status:
+          type: string
+          enum: [RELAXED, HURRY, MISSED]
+          description: 여유/서두르세요/놓침→다음 차 (FR-502). 색상 외 수단으로도 구분 (NFR-06)
+        rawMessage: { type: string, example: "9분후[3번째 전]" }
+    BoardingFeedbackRequest:
+      type: object
+      required: [result, notifiedDate]
+      properties:
+        result:
+          type: string
+          enum: [BOARDED, MISSED]
+          description: 탔어요 / 놓쳤어요
+        notifiedDate:
+          type: string
+          format: date
+          description: 해당 출근일
+          example: "2026-08-28"
+    StopSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [type, stopId, displayName, subtitle]
+            properties:
+              type: { $ref: "#/components/schemas/StopType" }
+              stopId: { type: string, example: "19284" }
+              displayName: { type: string, example: 여의도환승센터 }
+              subtitle:
+                type: string
+                description: 동명 정류장 구분용 보조 정보 (정류소 번호·행정구 / 호선). 항상 존재 — 없으면 빈 문자열(null/누락 금지)
+                example: 서울 · 19284
+    StopRoutesResponse:
+      type: object
+      required: [routes]
+      properties:
+        routes:
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, example: "720" }
+              isExpress: { type: boolean, nullable: true }

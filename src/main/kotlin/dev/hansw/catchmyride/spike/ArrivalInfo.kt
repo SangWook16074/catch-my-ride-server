@@ -14,6 +14,7 @@ data class ArrivalInfo(
     val remainingStops: Int?,               // 남은 정류장 수 (버스)
     val isExpress: Boolean?,                // 급행 여부 (지하철)
     val rawMessage: String?,                // "3분후[2번째 전]" 같은 원문 도착 문구
+    val line: String? = null,               // 지하철 호선명(subwayId 매핑) — 통근 설정 노선 매칭용, 버스는 null
 )
 
 /** 어댑터 호출 1회의 결과. rawBody는 파싱 누락 검증용으로 함께 보존한다. */

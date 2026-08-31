@@ -20,5 +20,5 @@ COPY --from=build /build/build/libs/*.jar app.jar
 
 ENV TZ=Asia/Seoul \
     JAVA_OPTS="-Xms128m -Xmx512m"
-EXPOSE 8080
+EXPOSE 5000
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

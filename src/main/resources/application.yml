@@ -1,6 +1,22 @@
+server:
+  port: 5000 # EC2에서 8080은 기존 서비스가 사용 중 — 이 서버는 5000으로 통일(compose·Caddy·CI 헬스체크 동일)
+
 spring:
   application:
     name: catchmyride-server
+  datasource:
+    # 로컬 bootRun은 localhost, docker compose는 SPRING_DATASOURCE_URL로 postgres 서비스를 가리킨다
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/catchmyride}
+    username: ${SPRING_DATASOURCE_USERNAME:catchmyride}
+    password: ${POSTGRES_PASSWORD:}
+  sql:
+    init:
+      mode: always # schema.sql의 CREATE TABLE IF NOT EXISTS 실행 — Phase 1 안정화 후 Flyway 검토
+
+auth:
+  # 토스 로그인(clientId)이 열리기 전까지의 로컬/E2E용 고정 유저 (SERVER_FEEDBACK.md §3).
+  # 배포에서 실인증을 붙일 때(S-3) 빈 값으로 두면 헤더 없는 요청은 401이 된다.
+  dev-user-key: ${AUTH_DEV_USER_KEY:dev-user}
 
 spike:
   polling:
