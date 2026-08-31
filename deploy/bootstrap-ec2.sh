@@ -55,9 +55,11 @@ if ! git ls-remote -q "$REPO_URL" > /dev/null 2>&1; then
   exit 1
 fi
 
-# 3. 저장소 클론
+# 3. 저장소 클론 — 반드시 현재 사용자로 (root에는 Deploy Key·known_hosts가 없다)
 if [ ! -d "$APP_DIR/.git" ]; then
-  sudo git clone "$REPO_URL" "$APP_DIR"
+  sudo mkdir -p "$APP_DIR"
+  sudo chown "$USER":"$USER" "$APP_DIR"
+  git clone "$REPO_URL" "$APP_DIR"
   echo "✔ 클론: $APP_DIR"
 fi
 sudo chown -R "$USER":"$USER" "$APP_DIR"
