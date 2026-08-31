@@ -16,11 +16,29 @@ if [ ! -f /swapfile ] && [ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -lt 200
   echo "✔ 스왑 2GB 생성"
 fi
 
-# 1. docker + compose
-if ! command -v docker > /dev/null; then
-  sudo apt-get update -qq && sudo apt-get install -y -qq docker.io docker-compose-v2
-  echo "✔ docker 설치"
+# 1. git + docker + compose (Ubuntu=apt / Amazon Linux·RHEL=dnf)
+if command -v apt-get > /dev/null; then
+  command -v git > /dev/null || sudo apt-get install -y -qq git
+  if ! command -v docker > /dev/null; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq docker.io docker-compose-v2
+    echo "✔ docker 설치 (apt)"
+  fi
+else
+  command -v git > /dev/null || sudo dnf install -y -q git
+  if ! command -v docker > /dev/null; then
+    sudo dnf install -y -q docker
+    echo "✔ docker 설치 (dnf)"
+  fi
+  # Amazon Linux에는 compose 플러그인 패키지가 없어 직접 설치
+  if ! docker compose version > /dev/null 2>&1 && ! sudo docker compose version > /dev/null 2>&1; then
+    sudo mkdir -p /usr/local/lib/docker/cli-plugins
+    sudo curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+    sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+    echo "✔ compose 플러그인 설치"
+  fi
 fi
+sudo systemctl enable --now docker 2>/dev/null || true
 sudo usermod -aG docker "$USER" || true
 
 # 2. Deploy Key 준비 — 없으면 생성하고, 저장소 접근이 안 되면 공개키를 출력하고 중단
