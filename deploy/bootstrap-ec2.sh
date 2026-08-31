@@ -5,7 +5,8 @@
 set -euo pipefail
 
 APP_DIR=/opt/catch-my-ride-server
-REPO_URL=https://github.com/SangWook16074/catch-my-ride-server.git
+# private 저장소 — EC2는 Deploy Key(읽기 전용)로 접근한다. 클론·CI의 git fetch 둘 다 이 키를 쓴다.
+REPO_URL=git@github.com:SangWook16074/catch-my-ride-server.git
 
 # 0. RAM 2GB 미만이면 스왑 2GB (JVM+PostgreSQL 동시 구동 안전판)
 if [ ! -f /swapfile ] && [ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -lt 2000000 ]; then
@@ -22,7 +23,21 @@ if ! command -v docker > /dev/null; then
 fi
 sudo usermod -aG docker "$USER" || true
 
-# 2. 저장소 클론 (private 저장소 — https 클론에 GitHub 인증이 필요하면 토큰 포함 URL로 바꿔 실행)
+# 2. Deploy Key 준비 — 없으면 생성하고, 저장소 접근이 안 되면 공개키를 출력하고 중단
+if [ ! -f ~/.ssh/id_ed25519 ]; then
+  ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -C "catch-my-ride-server-ec2" -q
+fi
+ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+if ! git ls-remote -q "$REPO_URL" > /dev/null 2>&1; then
+  echo ""
+  echo "⛔ 저장소 접근 불가 — 아래 공개키를 GitHub Deploy Key로 등록 후 이 스크립트를 다시 실행하세요:"
+  echo "   (등록: gh repo deploy-key add - -R SangWook16074/catch-my-ride-server --title ec2 후 키 붙여넣기)"
+  echo ""
+  cat ~/.ssh/id_ed25519.pub
+  exit 1
+fi
+
+# 3. 저장소 클론
 if [ ! -d "$APP_DIR/.git" ]; then
   sudo git clone "$REPO_URL" "$APP_DIR"
   echo "✔ 클론: $APP_DIR"
@@ -30,7 +45,7 @@ fi
 sudo chown -R "$USER":"$USER" "$APP_DIR"
 cd "$APP_DIR" && git pull -q
 
-# 3. 시크릿 배치 — 로컬에서 scp로 올린 /tmp/app.env 사용
+# 4. 시크릿 배치 — 로컬에서 scp로 올린 /tmp/app.env 사용
 if [ -f /tmp/app.env ]; then
   mv /tmp/app.env "$APP_DIR/.env" && chmod 600 "$APP_DIR/.env"
   echo "✔ .env 배치"
@@ -38,10 +53,10 @@ elif [ ! -f "$APP_DIR/.env" ]; then
   echo "⚠ .env 없음 — 키 없이 기동합니다(경고 로그). 나중에 scp로 올리고 app 재기동 필요"
 fi
 
-# 4. 전체 스택 기동 (이후 배포는 CI가 app만 갈아끼움)
+# 5. 전체 스택 기동 (이후 배포는 CI가 app만 갈아끼움)
 sudo docker compose up -d --build
 
-# 5. 헬스체크 (최대 2분 — 첫 빌드는 오래 걸릴 수 있음)
+# 6. 헬스체크 (최대 2분 — 첫 빌드는 오래 걸릴 수 있음)
 for i in $(seq 1 24); do
   if curl -fsS http://127.0.0.1:5000/actuator/health 2>/dev/null | grep -q '"UP"'; then
     echo "✅ 셋업 완료 — app UP"
