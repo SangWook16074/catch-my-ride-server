@@ -12,7 +12,7 @@ ECR_REPO=catch-my-ride-server
 IAM_USER=catch-my-ride-deploy
 GH_REPO=SangWook16074/catch-my-ride-server
 EC2_HOST=3.37.219.135
-EC2_USER=ubuntu
+EC2_USER=ec2-user
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 echo "AWS 계정: $ACCOUNT_ID / 리전: $REGION"

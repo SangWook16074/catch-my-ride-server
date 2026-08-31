@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # EC2 최초 셋업 (1회, 멱등) — EC2 "위에서" 실행하는 스크립트.
 # 로컬에서 한 줄로 실행:
-#   scp .env ubuntu@<EC2_IP>:/tmp/app.env && ssh ubuntu@<EC2_IP> 'bash -s' < deploy/bootstrap-ec2.sh
+#   scp .env ec2-user@<EC2_IP>:/tmp/app.env && ssh ec2-user@<EC2_IP> 'bash -s' < deploy/bootstrap-ec2.sh
 set -euo pipefail
 
 APP_DIR=/opt/catch-my-ride-server

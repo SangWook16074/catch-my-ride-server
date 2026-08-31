@@ -16,7 +16,7 @@ sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
 
 # 2. 저장소 클론 (CI가 git checkout을 실행하므로 SSH 사용자 소유여야 함)
 sudo git clone https://github.com/SangWook16074/catch-my-ride-server.git /opt/catch-my-ride-server
-sudo chown -R ubuntu:ubuntu /opt/catch-my-ride-server
+sudo chown -R ec2-user:ec2-user /opt/catch-my-ride-server
 cd /opt/catch-my-ride-server
 
 # 3. 시크릿 배치 (템플릿: .env.example — 키 관리 방침은 그 파일 주석 참조)
@@ -58,7 +58,7 @@ git tag v0.1.0 && git push origin v0.1.0
    gh secret set AWS_ACCESS_KEY_ID -R SangWook16074/catch-my-ride-server
    gh secret set AWS_SECRET_ACCESS_KEY -R SangWook16074/catch-my-ride-server
    gh secret set EC2_HOST -R SangWook16074/catch-my-ride-server --body "3.37.219.135"
-   gh secret set EC2_USER -R SangWook16074/catch-my-ride-server --body "ubuntu"
+   gh secret set EC2_USER -R SangWook16074/catch-my-ride-server --body "ec2-user"
    gh secret set EC2_SSH_KEY -R SangWook16074/catch-my-ride-server < ~/.ssh/<EC2키>.pem
    ```
    선택 Variables: `AWS_REGION`(기본 ap-northeast-2), `ECR_REPOSITORY`(기본 catch-my-ride-server), `EC2_APP_DIR`(기본 /opt/catch-my-ride-server)
