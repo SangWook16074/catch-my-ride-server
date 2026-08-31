@@ -38,3 +38,13 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+### 시크릿·작업 파일 (단독 저장소 전환으로 루트 .gitignore에서 이관) ###
+.env
+.env.*
+!.env.example
+spike-logs/
+backups/
+.omc/
+**/.omc/
+.DS_Store

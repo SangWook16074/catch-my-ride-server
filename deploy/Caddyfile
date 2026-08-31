@@ -1,0 +1,6 @@
+# catchmyride.hansw.dev → app 컨테이너 (HTTPS 인증서 자동 발급/갱신)
+# DNS A 레코드가 VM 공인 IP를 가리켜야 발급된다 (DEPLOY.md D-4)
+catchmyride.hansw.dev {
+	encode gzip
+	reverse_proxy app:5000
+}

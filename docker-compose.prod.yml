@@ -1,0 +1,7 @@
+# 운영(EC2) 오버라이드 — app을 VM에서 빌드하지 않고 CI가 ECR에 푸시한 이미지를 쓴다.
+# CI(.github/workflows/deploy.yml)가 APP_IMAGE를 .deploy.env로 주입해 실행:
+#   docker compose --env-file .deploy.env -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build app
+services:
+  app:
+    image: ${APP_IMAGE:?ECR 이미지 URI가 필요합니다 — deploy.yml이 .deploy.env로 주입}
+    pull_policy: always

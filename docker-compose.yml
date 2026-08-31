@@ -1,0 +1,67 @@
+# 놓치지마 서버 배포 구성
+# VM:   docker compose up -d --build          (caddy 포함 전체)
+# 로컬: docker compose up -d app postgres     (caddy는 DNS 연결된 VM에서만 의미 있음)
+# 캐시: Redis는 인스턴스 2대 이상일 때만 — docker compose --profile cache up -d
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: ./.env
+        required: false # 키 없이도 기동(경고 로그만) — VM에는 반드시 둘 것
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/catchmyride
+    ports:
+      - "5000:5000" # 0.0.0.0 바인딩 — 실기기(LAN)에서 Mac IP로 접근 가능해야 함. VM에선 방화벽+caddy가 외부 공개를 통제
+    volumes:
+      - ./spike-logs:/app/spike-logs # 폴링 JSONL을 호스트에 영속화
+    depends_on:
+      postgres:
+        condition: service_healthy # 기동 시 schema.sql 실행이 DB를 필요로 한다
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # 인증서 보존 — 지우면 재발급(레이트리밋 주의)
+      - caddy-config:/config
+    depends_on:
+      - app
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - path: ./.env # POSTGRES_PASSWORD는 여기서 주입
+        required: false
+    environment:
+      POSTGRES_DB: catchmyride
+      POSTGRES_USER: catchmyride
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catchmyride"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ["cache"] # 캐시 공유가 필요해지기 전에는 기동하지 않는다
+
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:
