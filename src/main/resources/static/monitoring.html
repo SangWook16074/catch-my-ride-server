@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<!-- 운영 모니터링 대시보드 — /api/admin/monitoring을 10초마다 폴링하는 정적 페이지.
+     서버 jar에 동봉돼 별도 배포가 없다(swagger-ui.html과 같은 방식). -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>놓치지마 서버 모니터링</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: #0f1115; color: #e6e9ef;
+         font: 14px/1.5 ui-sans-serif, system-ui, "Apple SD Gothic Neo", sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 16px; display: flex; align-items: center; gap: 10px; }
+  h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: #4ade80; display: inline-block; }
+  h1 .dot.err { background: #f87171; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: #171a21; border: 1px solid #262b36; border-radius: 10px; padding: 14px 16px; }
+  .card .label { color: #8b93a5; font-size: 12px; margin-bottom: 4px; }
+  .card .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; background: #171a21; border: 1px solid #262b36;
+          border-radius: 10px; overflow: hidden; }
+  th, td { padding: 9px 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th { background: #1d2129; color: #8b93a5; font-size: 12px; font-weight: 500; }
+  td.uri, th.uri { text-align: left; font-family: ui-monospace, monospace; font-size: 13px; }
+  tr + tr td { border-top: 1px solid #21252e; }
+  .method { display: inline-block; min-width: 44px; text-align: center; padding: 1px 6px; border-radius: 5px;
+            font-size: 11px; font-weight: 600; background: #24304a; color: #93b4f0; margin-right: 8px; }
+  .status { color: #8b93a5; font-size: 12px; }
+  .status .bad { color: #f87171; }
+  .ok    { color: #4ade80; }
+  .warn  { color: #fbbf24; }
+  .slow  { color: #f87171; font-weight: 600; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .toolbar input { background: #171a21; border: 1px solid #262b36; border-radius: 8px; color: #e6e9ef;
+                   padding: 7px 10px; width: 220px; }
+  .toolbar button { background: #24304a; border: 1px solid #33415e; border-radius: 8px; color: #cfe0ff;
+                    padding: 7px 14px; cursor: pointer; }
+  .toolbar button:hover { background: #2b3a59; }
+  .toolbar label { color: #8b93a5; font-size: 13px; display: flex; align-items: center; gap: 5px; }
+  #error { color: #f87171; margin: 12px 0; display: none; }
+  .muted { color: #8b93a5; font-size: 12px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<h1><span class="dot" id="statusDot"></span>놓치지마 서버 모니터링 <span class="muted" id="updatedAt"></span></h1>
+
+<div class="toolbar">
+  <input id="token" type="password" placeholder="어드민 토큰 (ADMIN_TOKEN 미설정 시 비움)">
+  <button id="refresh">새로고침</button>
+  <label><input type="checkbox" id="showAll"> 감시 트래픽 포함(actuator·어드민)</label>
+</div>
+<div id="error"></div>
+
+<div class="cards">
+  <div class="card"><div class="label">가동 시간</div><div class="value" id="uptime">—</div></div>
+  <div class="card"><div class="label">기동 시각</div><div class="value" id="startedAt" style="font-size:14px">—</div></div>
+  <div class="card"><div class="label">총 요청 수</div><div class="value" id="totalRequests">—</div></div>
+  <div class="card"><div class="label">힙 메모리</div><div class="value" id="heap">—</div></div>
+</div>
+
+<table>
+  <thead><tr>
+    <th class="uri">엔드포인트</th><th>요청 수</th><th>상태코드</th>
+    <th>평균</th><th>p50</th><th>p95</th><th>p99</th><th>최대</th>
+  </tr></thead>
+  <tbody id="rows"><tr><td class="uri" colspan="8">불러오는 중…</td></tr></tbody>
+</table>
+
+<p class="muted">수치는 서버 기동 이후 누적(재배포 시 리셋). p95/p99는 상태코드별 타이머의 최대값(보수적 근사).
+개별 요청 이력은 <code>docker logs app | grep -E "ms$"</code>, 3초 초과는 <code>grep SLOW</code>.</p>
+
+<script>
+  const $ = id => document.getElementById(id);
+  $("token").value = localStorage.getItem("adminToken") || "";
+
+  function fmtUptime(s) {
+    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return (d ? d + "d " : "") + h + "h " + m + "m";
+  }
+  function msClass(ms) { return ms >= 3000 ? "slow" : ms >= 500 ? "warn" : "ok"; }
+  function msCell(ms) { return `<td class="${msClass(ms)}">${ms.toLocaleString()}ms</td>`; }
+  function statusCell(counts) {
+    return Object.entries(counts).sort()
+      .map(([s, n]) => `<span class="${s.startsWith("2") ? "" : "bad"}">${s}×${n}</span>`)
+      .join(" ");
+  }
+
+  async function load() {
+    const token = $("token").value.trim();
+    localStorage.setItem("adminToken", token);
+    try {
+      const res = await fetch("/api/admin/monitoring" + ($("showAll").checked ? "?all=true" : ""),
+        { headers: token ? { "X-Admin-Token": token } : {} });
+      if (!res.ok) throw new Error(res.status === 401 ? "토큰이 올바르지 않습니다 (401)" : "HTTP " + res.status);
+      const data = await res.json();
+
+      $("uptime").textContent = fmtUptime(data.uptimeSeconds);
+      $("startedAt").textContent = new Date(data.serverStartedAt).toLocaleString("ko-KR");
+      $("totalRequests").textContent = data.totalRequests.toLocaleString();
+      $("heap").textContent = `${data.heapUsedMb} / ${data.heapMaxMb} MB`;
+
+      $("rows").innerHTML = data.endpoints.length === 0
+        ? '<tr><td class="uri" colspan="8">아직 기록된 요청이 없습니다</td></tr>'
+        : data.endpoints.map(e => `<tr>
+            <td class="uri"><span class="method">${e.method}</span>${e.uri}</td>
+            <td>${e.count.toLocaleString()}</td>
+            <td class="status">${statusCell(e.statusCounts)}</td>
+            ${msCell(e.meanMs)}${msCell(e.p50Ms)}${msCell(e.p95Ms)}${msCell(e.p99Ms)}${msCell(e.maxMs)}
+          </tr>`).join("");
+
+      $("error").style.display = "none";
+      $("statusDot").classList.remove("err");
+      $("updatedAt").textContent = "· " + new Date().toLocaleTimeString("ko-KR") + " 갱신";
+    } catch (e) {
+      $("error").textContent = "조회 실패: " + e.message;
+      $("error").style.display = "block";
+      $("statusDot").classList.add("err");
+    }
+  }
+
+  $("refresh").addEventListener("click", load);
+  $("showAll").addEventListener("change", load);
+  $("token").addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+  load();
+  setInterval(load, 10_000);
+</script>
+</body>
+</html>

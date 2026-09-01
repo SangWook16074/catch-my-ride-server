@@ -9,9 +9,35 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/catchmyride}
     username: ${SPRING_DATASOURCE_USERNAME:catchmyride}
     password: ${POSTGRES_PASSWORD:}
+    hikari:
+      keepalive-time: 240000 # 4분 — 유휴 커넥션을 주기 검증해 첫 요청이 TCP 재수립 비용을 내지 않게
+  mvc:
+    servlet:
+      load-on-startup: 1 # DispatcherServlet을 기동 시 초기화 — 재배포 후 첫 요청 지연 제거
   sql:
     init:
       mode: always # schema.sql의 CREATE TABLE IF NOT EXISTS 실행 — Phase 1 안정화 후 Flyway 검토
+
+# 응답 시간 모니터링 — 개별 요청은 RequestTimingFilter 로그, 집계(p50/p95/p99)는
+# GET /actuator/metrics/http.server.requests (URI별: ?tag=uri:/api/v1/arrivals)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics
+  metrics:
+    distribution:
+      percentiles:
+        "[http.server.requests]": 0.5, 0.95, 0.99
+
+# 유휴 후 첫 호출 지연 방지 — KeepAliveWarmer 자기 호출 주기 (warmup.enabled=false로 끔)
+warmup:
+  interval: PT4M
+
+admin:
+  # /api/admin/monitoring·/monitoring.html 대시보드 보호 토큰 (X-Admin-Token 헤더로 검사).
+  # 빈 값이면 개방 — dev-user-key와 같은 Phase 1 편의. VM .env에는 반드시 넣을 것.
+  token: ${ADMIN_TOKEN:}
 
 auth:
   # 토스 로그인(clientId)이 열리기 전까지의 로컬/E2E용 고정 유저 (SERVER_FEEDBACK.md §3).
