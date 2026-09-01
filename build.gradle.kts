@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "dev.hansw"
-version = "0.0.1-SNAPSHOT"
+version = "0.2.0"
 
 java {
 	toolchain {
