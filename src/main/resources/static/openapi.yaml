@@ -9,7 +9,7 @@ info:
     출근길 출발 타이밍 알림 미니앱(앱인토스)의 파트너 서버 API.
     - 원천 계약 문서: 저장소 루트 `API.md` (v0.2) — 이 스펙은 그 계약의 Swagger 표현이다.
     - 유저는 전체 정류장/역(서울·경기 버스 + 수도권 지하철)에서 검색·선택한다 (2026-08-28 오너 결정, 명세서 §9).
-    - 구현 상태 (2026-08-28): §1·§2·§3·§5 전부 구현·배포됨. 인증은 토스 로그인 연동(clientId) 전까지 dev 고정 유저로 동작 — Authorization 헤더는 아직 무시된다.
+    - 구현 상태 (2026-09-02): §1·§2·§3·§5·§6·§7 구현·배포됨 (§6·§7은 NCP 키 설정 전까지 503 → 클라이언트 폴백). §4 푸시는 발송 파이프라인 구현·dry-run 동작 중(템플릿 검수 후 라이브). 인증은 토스 로그인 연동(clientId) 전까지 dev 고정 유저로 동작 — Authorization 헤더는 아직 무시된다.
 servers:
   - url: https://catchmyride.hansw.dev
     description: 운영 (Oracle VM + Caddy HTTPS)
@@ -26,6 +26,8 @@ tags:
     description: 탑승 피드백 — North Star 측정 (FR-601)
   - name: stops
     description: 정류장/역 전체 검색 (온보딩 FR-102·103)
+  - name: map
+    description: 지도 미리보기·주소 검색 프록시 (온보딩 집 위치, FR-101 보완 — 2026-09-02 §6·§7 추가)
 
 paths:
   /api/v1/commute-setting:
@@ -157,6 +159,92 @@ paths:
               schema: { $ref: "#/components/schemas/StopRoutesResponse" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/map-preview:
+    get:
+      tags: [map]
+      summary: 지도 미리보기 (NCP Static Map 프록시)
+      description: |
+        온보딩/재설정 집 위치 단계의 지도 표시용 — NCP 키는 서버에만 보관.
+        마커는 클라이언트가 오버레이하므로 순수 지도만 반환. 인증 불필요.
+        키 미설정·상류 장애는 503 — 클라이언트가 OSM 타일로 자동 폴백.
+      security: []
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema: { type: number, minimum: -90, maximum: 90 }
+          example: 37.5219
+        - name: lng
+          in: query
+          required: true
+          schema: { type: number, minimum: -180, maximum: 180 }
+          example: 126.9245
+        - name: w
+          in: query
+          description: 픽셀 폭 — 서버에서 1~1024로 클램프
+          schema: { type: integer, default: 708 }
+        - name: h
+          in: query
+          description: 픽셀 높이 — 서버에서 1~1024로 클램프
+          schema: { type: integer, default: 320 }
+        - name: level
+          in: query
+          description: 줌 레벨
+          schema: { type: integer, default: 16 }
+      responses:
+        "200":
+          description: 지도 이미지
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "503":
+          description: NCP 키 미설정 또는 상류 장애 — 클라이언트 OSM 폴백
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/geocode:
+    get:
+      tags: [map]
+      summary: 주소 검색 — 지오코딩 (NCP Geocoding 프록시)
+      description: |
+        집 위치를 GPS 대신 주소로 등록 (FR-101 보완, GPS 부정확 대응). 인증 불필요.
+        최대 10건, 결과 없으면 빈 배열(에러 아님).
+      security: []
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+          example: 여의공원로 101
+      responses:
+        "200":
+          description: 주소 후보 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    maxItems: 10
+                    items:
+                      type: object
+                      required: [roadAddress, jibunAddress, latitude, longitude]
+                      properties:
+                        roadAddress: { type: string, example: 서울특별시 영등포구 여의공원로 101 }
+                        jibunAddress: { type: string, example: 서울특별시 영등포구 여의도동 23 }
+                        latitude: { type: number, example: 37.5219 }
+                        longitude: { type: number, example: 126.9245 }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "503":
+          description: NCP 키 미설정 또는 상류 장애
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
 
 components:
   securitySchemes:

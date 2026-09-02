@@ -48,6 +48,13 @@ push:
   template-pre: ${PUSH_TEMPLATE_PRE:}       # 예: CATCHMYRIDE_DEPARTURE_PRE (docs/push-templates.md)
   template-remind: ${PUSH_TEMPLATE_REMIND:} # 예: CATCHMYRIDE_DEPARTURE_REMIND
 
+# 네이버클라우드 Maps (API.md §6 지도 미리보기·§7 지오코딩) — 키 미설정이면 두 엔드포인트는 503
+# (클라이언트가 OSM 폴백/안내 문구로 강등). 🧑 NCP 콘솔 > Maps에서 Static Map·Geocoding 이용 신청 후 발급
+ncp:
+  maps:
+    key-id: ${NCP_MAP_KEY_ID:}
+    key: ${NCP_MAP_KEY:}
+
 auth:
   # 토스 로그인(clientId)이 열리기 전까지의 로컬/E2E용 고정 유저 (SERVER_FEEDBACK.md §3).
   # 배포에서 실인증을 붙일 때(S-3) 빈 값으로 두면 헤더 없는 요청은 401이 된다.

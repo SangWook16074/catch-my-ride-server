@@ -33,6 +33,11 @@
 - [x] **S-7** 피드백 수집 API(API.md §3) — 수집(2026-08-28) + "발송 이력 있는 날만 접수" 검증(2026-09-02, 라이브 발송 상태에서만 활성). 잔여: North Star 집계 쿼리(운영 데이터 쌓인 후)
 - [x] **S-8** 정류장/역 검색 API(API.md §5) — 2026-08-28 완료: `stops/` 패키지(3소스 통합 서비스 + 소스별 클라이언트 + 지하철 정적 카탈로그 655역) + 공통 에러 처리(`api/ApiError.kt`, INVALID_REQUEST·UPSTREAM_UNAVAILABLE). 테스트 14건(파싱 픽스처·HTTP 계약). GBIS는 추가 활용신청 없이 동작 확인(서울 정류소도 GBIS DB에 포함). 서울 버스 소스는 키 동기화 후 자동 개통
 
+## 지도 프록시 (2026-09-02 — API.md §6·§7, SERVER_FEEDBACK.md 추가 요구)
+
+- [x] `GET /api/v1/map-preview` — NCP Static Map 패스스루(좌표 검증·1~1024 클램프·좌표 4자리 캐시 TTL 6h) + `GET /api/v1/geocode` — NCP Geocoding 매핑(x=경도·y=위도 문자열 변환, 최대 10건). 인증 불필요, IP당 분당 60회 rate limit
+- [ ] 🧑 **NCP 키 발급** — 콘솔 > Maps에서 Static Map·Geocoding 이용 신청 → EC2 `.env`에 `NCP_MAP_KEY_ID`·`NCP_MAP_KEY` 추가 후 `docker compose up -d app`. 키 전까지 두 엔드포인트는 503 → 클라이언트 OSM 폴백/안내 문구로 동작(막히지 않음)
+
 ## 작업 수칙 (서버)
 
 - 테스트 먼저(TDD) — 특히 S-4·S-5의 타이밍/불변 조건은 테스트가 명세다.

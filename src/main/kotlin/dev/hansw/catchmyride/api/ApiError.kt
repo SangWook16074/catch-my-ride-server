@@ -44,6 +44,11 @@ class ApiExceptionHandler {
         ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(ErrorResponse("INVALID_REQUEST", "필수 파라미터 누락: ${e.parameterName}"))
 
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException::class)
+    fun handleTypeMismatch(e: org.springframework.web.method.annotation.MethodArgumentTypeMismatchException): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse("INVALID_REQUEST", "파라미터 형식이 잘못됐습니다: ${e.name}"))
+
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun handleUnreadableBody(e: HttpMessageNotReadableException): ResponseEntity<ErrorResponse> =
         ResponseEntity.status(HttpStatus.BAD_REQUEST)
