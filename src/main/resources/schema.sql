@@ -16,6 +16,17 @@ CREATE TABLE IF NOT EXISTS commute_setting (
     updated_at           TIMESTAMP NOT NULL
 );
 
+-- FR-403 출근 1회당 최대 2회(PRE·REMIND) — PK가 스테이지별 중복 발송을 구조적으로 막는다 (S-5)
+CREATE TABLE IF NOT EXISTS push_log (
+    user_key      VARCHAR(128) NOT NULL,
+    notified_date DATE NOT NULL,
+    stage         VARCHAR(16) NOT NULL,   -- PRE | REMIND
+    route_name    VARCHAR(64),
+    delivered     BOOLEAN NOT NULL,       -- false = dry-run 기록 (앱인토스 키·템플릿 미설정 상태)
+    sent_at       TIMESTAMP NOT NULL,
+    PRIMARY KEY (user_key, notified_date, stage)
+);
+
 -- FR-601 탑승 피드백 — 유저·날짜당 1건, 재제출은 갱신 (API.md §3)
 CREATE TABLE IF NOT EXISTS boarding_feedback (
     user_key      VARCHAR(128) NOT NULL,

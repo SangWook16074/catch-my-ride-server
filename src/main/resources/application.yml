@@ -39,6 +39,15 @@ admin:
   # 빈 값이면 개방 — dev-user-key와 같은 Phase 1 편의. VM .env에는 반드시 넣을 것.
   token: ${ADMIN_TOKEN:}
 
+# 푸시 알림 (API.md §4, S-5/S-6) — api-key·템플릿 코드가 비면 dry-run(스케줄러는 돌고 push_log만 기록).
+# P0-7 템플릿 검수 통과 후 승인된 templateSetCode와 파트너 api-key를 env로 넣으면 라이브 전환된다.
+push:
+  enabled: true
+  interval: PT30S # 발송 판단 주기 — 라이브 뷰 폴링(FR-204)과 같은 30초
+  api-key: ${APPS_IN_TOSS_API_KEY:}
+  template-pre: ${PUSH_TEMPLATE_PRE:}       # 예: CATCHMYRIDE_DEPARTURE_PRE (docs/push-templates.md)
+  template-remind: ${PUSH_TEMPLATE_REMIND:} # 예: CATCHMYRIDE_DEPARTURE_REMIND
+
 auth:
   # 토스 로그인(clientId)이 열리기 전까지의 로컬/E2E용 고정 유저 (SERVER_FEEDBACK.md §3).
   # 배포에서 실인증을 붙일 때(S-3) 빈 값으로 두면 헤더 없는 요청은 401이 된다.

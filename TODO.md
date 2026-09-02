@@ -24,13 +24,13 @@
 
 ## Phase 1 본편 — 즉시 진행 가능
 
-- [ ] **S-1** 도메인 모델·스키마 — `CommuteSetting`, `PushLog`(중복 발송 방어), `BoardingFeedback`. PostgreSQL 확정(마이그레이션 도구 포함)
+- [x] **S-1** 도메인 모델·스키마 — 2026-09-02 완료: `commute_setting`·`boarding_feedback`(2026-08-28) + `push_log`(중복 발송 방어 — PK로 스테이지별 1회 강제). Flyway는 Phase 1 안정화 후
 - [ ] **S-2** 어댑터 본편화 — 스파이크 어댑터에서 `TransitAdapter` 인터페이스 추출 + 정류장 단위 캐시(TTL 15~30초, 단일 인스턴스는 인메모리 — DEPLOY.md §5)
-- [ ] **S-3** 통근 설정 CRUD API — [../API.md](../API.md) §1 계약대로. 토스 로그인 토큰 검증→userKey 식별
-- [ ] **S-4** 출발 타이밍 계산 서비스 — FR-301/303/304/407. **TDD 필수**, 오너가 읽을 수 있게 명료하게
-- [ ] **S-5** 알림 스케줄러 — 유저별 출근 시간대 폴링 → 2단계 푸시. 불변 조건: 1출근 2회 초과 발송 불가(PushLog로 강제), 미적용 요일 미발송
-- [ ] **S-6** 앱인토스 `send-message` 클라이언트 — 승인된 templateSetCode + context 주입, 실패 재시도, 한도(앱 15,000회/분·유저 10회/분) 준수
-- [ ] **S-7** 피드백 수집 API(API.md §3) + North Star 집계 쿼리(탑승 성공률·알림 정확도)
+- [x] **S-3** 통근 설정 CRUD API — 2026-08-28 완료(§1 계약·에러 바디·E2E 검증). 잔여: 토스 로그인 토큰 실검증(콘솔 약관 동의 대기 — 현재 dev-user 고정)
+- [x] **S-4** 출발 타이밍 계산 서비스 — 2026-09-02 완료: `push/DepartureTimingService` — FIXED(출발−버퍼 PRE·출발−1분 REMIND)·RECOMMENDED(최근접 탑승 가능 차량 역산, FR-301). TDD(`DepartureTimingServiceTest`가 명세). 잔여: FR-407 대안 안내(P1)
+- [x] **S-5** 알림 스케줄러 — 2026-09-02 완료: `push/PushNotificationScheduler` 30초 틱. 불변 조건 테스트로 강제: 1출근 2회 초과 불가(push_log PK)·미적용 요일 미발송·실패 시 다음 틱 재시도·시간대 밖 공공 API 미호출
+- [x] **S-6** 앱인토스 `send-message` 클라이언트 — 2026-09-02 완료: `push/AppsInTossPushClient` — templateSetCode+context 주입, 1회 재시도. **api-key·템플릿 미설정이면 dry-run**(P0-7 검수·약관 동의 후 env 주입 시 라이브 전환). 인증 스킴은 파트너 키 발급 후 확정
+- [x] **S-7** 피드백 수집 API(API.md §3) — 수집(2026-08-28) + "발송 이력 있는 날만 접수" 검증(2026-09-02, 라이브 발송 상태에서만 활성). 잔여: North Star 집계 쿼리(운영 데이터 쌓인 후)
 - [x] **S-8** 정류장/역 검색 API(API.md §5) — 2026-08-28 완료: `stops/` 패키지(3소스 통합 서비스 + 소스별 클라이언트 + 지하철 정적 카탈로그 655역) + 공통 에러 처리(`api/ApiError.kt`, INVALID_REQUEST·UPSTREAM_UNAVAILABLE). 테스트 14건(파싱 픽스처·HTTP 계약). GBIS는 추가 활용신청 없이 동작 확인(서울 정류소도 GBIS DB에 포함). 서울 버스 소스는 키 동기화 후 자동 개통
 
 ## 작업 수칙 (서버)

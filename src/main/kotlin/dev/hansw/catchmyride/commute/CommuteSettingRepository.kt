@@ -7,6 +7,9 @@ import tools.jackson.databind.ObjectMapper
 import java.sql.ResultSet
 import java.time.LocalDateTime
 
+/** findAll용 — 스케줄러는 발송 대상 식별에 userKey가 함께 필요하다 */
+data class StoredSetting(val userKey: String, val setting: CommuteSetting)
+
 /**
  * commute_setting 테이블 저장소 (schema.sql).
  * stops·activeDays는 통째로만 읽고 쓰므로 JSON 문자열 컬럼 — upsert는 방언 의존을 피해 delete+insert.
@@ -16,6 +19,12 @@ class CommuteSettingRepository(
     private val jdbc: JdbcClient,
     private val objectMapper: ObjectMapper,
 ) {
+
+    /** 푸시 스케줄러(S-5)가 매 틱 전체 순회 — MVP 유저 규모에서 문제 없고, 커지면 활성 요일·시간대 필터를 SQL로 내린다 */
+    fun findAll(): List<StoredSetting> =
+        jdbc.sql("SELECT * FROM commute_setting")
+            .query { rs, _ -> StoredSetting(rs.getString("user_key"), toSetting(rs)) }
+            .list()
 
     fun find(userKey: String): CommuteSetting? =
         jdbc.sql("SELECT * FROM commute_setting WHERE user_key = :userKey")

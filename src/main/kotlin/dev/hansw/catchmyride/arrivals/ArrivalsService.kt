@@ -32,8 +32,11 @@ class ArrivalsService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    fun arrivals(userKey: String): ArrivalsResponse {
-        val setting = settings.find(userKey) ?: throw ApiException.settingNotFound()
+    fun arrivals(userKey: String): ArrivalsResponse =
+        arrivalsFor(settings.find(userKey) ?: throw ApiException.settingNotFound())
+
+    /** 푸시 스케줄러(S-5)가 설정을 이미 들고 순회하므로 설정 기반 진입점을 분리 */
+    fun arrivalsFor(setting: dev.hansw.catchmyride.commute.CommuteSetting): ArrivalsResponse {
         val walkSeconds = setting.walkMinutes * 60
         val bufferSeconds = setting.bufferMinutes * 60
 
