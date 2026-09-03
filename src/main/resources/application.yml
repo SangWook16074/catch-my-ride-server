@@ -59,6 +59,13 @@ auth:
   # 토스 로그인(clientId)이 열리기 전까지의 로컬/E2E용 고정 유저 (SERVER_FEEDBACK.md §3).
   # 배포에서 실인증을 붙일 때(S-3) 빈 값으로 두면 헤더 없는 요청은 401이 된다.
   dev-user-key: ${AUTH_DEV_USER_KEY:dev-user}
+  # 토스 로그인 파트너 API (API.md §8) — mTLS 인증서(PKCS12) 경로가 비면 비활성:
+  # /api/v1/auth/*는 503, 요청 인증은 위 dev-user-key 폴백. 🧑 콘솔 약관 동의 → 인증서 발급 후
+  # EC2 .env에 TOSS_MTLS_KEYSTORE(예: /app/secrets/toss-mtls.p12)·비밀번호를 넣으면 라이브 전환.
+  toss:
+    base-url: https://apps-in-toss-api.toss.im
+    keystore-path: ${TOSS_MTLS_KEYSTORE:}
+    keystore-password: ${TOSS_MTLS_KEYSTORE_PASSWORD:}
 
 spike:
   polling:

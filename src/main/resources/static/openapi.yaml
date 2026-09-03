@@ -9,7 +9,7 @@ info:
     출근길 출발 타이밍 알림 미니앱(앱인토스)의 파트너 서버 API.
     - 원천 계약 문서: 저장소 루트 `API.md` (v0.2) — 이 스펙은 그 계약의 Swagger 표현이다.
     - 유저는 전체 정류장/역(서울·경기 버스 + 수도권 지하철)에서 검색·선택한다 (2026-08-28 오너 결정, 명세서 §9).
-    - 구현 상태 (2026-09-02): §1·§2·§3·§5·§6·§7 구현·배포됨 (§6·§7은 NCP 키 설정 전까지 503 → 클라이언트 폴백). §4 푸시는 발송 파이프라인 구현·dry-run 동작 중(템플릿 검수 후 라이브). 인증은 토스 로그인 연동(clientId) 전까지 dev 고정 유저로 동작 — Authorization 헤더는 아직 무시된다.
+    - 구현 상태 (2026-09-03): §1·§2·§3·§5·§6·§7 구현·배포됨 (§6·§7은 NCP 키 설정 전까지 503 → 클라이언트 폴백). §4 푸시는 발송 파이프라인 구현·dry-run 동작 중(템플릿 검수 후 라이브). §8 토스 로그인 구현됨 — mTLS 인증서(TOSS_MTLS_KEYSTORE) 설정 전까지 /auth는 503, 요청 인증은 dev 고정 유저 폴백. 인증서 설정 후에는 Bearer 검증→userKey로 유저별 저장.
 servers:
   - url: https://catchmyride.hansw.dev
     description: 운영 (Oracle VM + Caddy HTTPS)
@@ -28,6 +28,8 @@ tags:
     description: 정류장/역 전체 검색 (온보딩 FR-102·103)
   - name: map
     description: 지도 미리보기·주소 검색 프록시 (온보딩 집 위치, FR-101 보완 — 2026-09-02 §6·§7 추가)
+  - name: auth
+    description: 토스 로그인 토큰 교환 (S-3/C-1 — 2026-09-03 §8 추가, mTLS 인증서 설정 전까지 503)
 
 paths:
   /api/v1/commute-setting:
@@ -246,12 +248,90 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /api/v1/auth/mode:
+    get:
+      tags: [auth]
+      summary: 인증 모드 조회 (§8-0) — 클라이언트가 토스 로그인/익명 키 중 선택하는 기준
+      security: []
+      responses:
+        "200":
+          description: 토스 로그인 라이브 여부 — false(또는 조회 실패)면 클라이언트는 익명 키(§8-3, Bearer anon:{hash}) 사용
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tossLoginAvailable]
+                properties:
+                  tossLoginAvailable: { type: boolean, example: false }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 토스 로그인 — appLogin 인가 코드를 토큰으로 교환 (§8-1)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authorizationCode, referrer]
+              properties:
+                authorizationCode: { type: string, description: 클라이언트 appLogin() 결과 (유효 10분) }
+                referrer: { type: string, enum: [DEFAULT, SANDBOX] }
+      responses:
+        "200":
+          description: 발급된 토큰 — 이후 모든 요청의 Bearer로 사용
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503":
+          description: 토스 로그인 미설정(mTLS 인증서 대기) 또는 토스 서버 장애 — 클라이언트는 헤더 없이 동작(dev 폴백)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: accessToken 갱신 (§8-2) — accessToken 1시간·refreshToken 14일
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: 새 토큰 쌍
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401":
+          description: refreshToken 만료/무효 — 클라이언트는 appLogin 전체 로그인으로 폴백
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: 토스 로그인 미설정 또는 토스 서버 장애
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
 components:
   securitySchemes:
     tossBearer:
       type: http
       scheme: bearer
-      description: 토스 로그인 accessToken — 서버가 토스 API로 검증 후 userKey 식별. 클라이언트는 userKey를 직접 보내지 않는다.
+      description: |
+        두 종류 토큰(§8): ① `anon:{hash}` — getAnonymousKey() 익명 키(현재 기본, 사업자 등록 전) ② 토스 로그인 accessToken — 서버가 토스 login-me로 검증 후 userKey 식별. 어느 쪽이든 유저별 저장.
   responses:
     SettingNotFound:
       description: 통근 설정 미등록 — 온보딩으로 유도
@@ -278,6 +358,13 @@ components:
       properties:
         code: { type: string, example: SETTING_NOT_FOUND }
         message: { type: string, example: 통근 설정이 없습니다 }
+    TokenResponse:
+      type: object
+      required: [accessToken, refreshToken, expiresInSeconds]
+      properties:
+        accessToken: { type: string, description: 토스 로그인 accessToken — 모든 요청의 Bearer (유효 1시간) }
+        refreshToken: { type: string, description: 갱신 토큰 (유효 14일) — 클라이언트가 로컬 보관 }
+        expiresInSeconds: { type: integer, format: int64, example: 3599 }
     StopType:
       type: string
       enum: [SEOUL_BUS, GYEONGGI_BUS, SUBWAY]
