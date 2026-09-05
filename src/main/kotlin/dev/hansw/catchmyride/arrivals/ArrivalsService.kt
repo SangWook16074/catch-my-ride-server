@@ -1,7 +1,7 @@
 package dev.hansw.catchmyride.arrivals
 
 import dev.hansw.catchmyride.api.ApiException
-import dev.hansw.catchmyride.commute.CommuteSettingRepository
+import dev.hansw.catchmyride.commute.CommuteRouteRepository
 import dev.hansw.catchmyride.commute.CommuteStop
 import dev.hansw.catchmyride.spike.ArrivalInfo
 import dev.hansw.catchmyride.spike.SpikeProperties
@@ -23,7 +23,7 @@ import java.time.temporal.ChronoUnit
  */
 @Service
 class ArrivalsService(
-    private val settings: CommuteSettingRepository,
+    private val routes: CommuteRouteRepository,
     private val topis: TopisBusAdapter,
     private val gbis: GbisBusAdapter,
     private val subway: SeoulSubwayAdapter,
@@ -32,8 +32,14 @@ class ArrivalsService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    fun arrivals(userKey: String): ArrivalsResponse =
-        arrivalsFor(settings.find(userKey) ?: throw ApiException.settingNotFound())
+    /** routeId 생략 시 첫 경로 — 레거시 클라이언트(§1)와 단일 경로 유저의 기본 동작 */
+    fun arrivals(userKey: String, routeId: String? = null): ArrivalsResponse {
+        val route = when (routeId) {
+            null -> routes.list(userKey).firstOrNull()
+            else -> routes.find(userKey, routeId)
+        } ?: throw ApiException.settingNotFound()
+        return arrivalsFor(route.setting)
+    }
 
     /** 푸시 스케줄러(S-5)가 설정을 이미 들고 순회하므로 설정 기반 진입점을 분리 */
     fun arrivalsFor(setting: dev.hansw.catchmyride.commute.CommuteSetting): ArrivalsResponse {
@@ -96,6 +102,7 @@ class ArrivalsService(
         return Arrival(
             stopDisplayName = stopName,
             routeName = route,
+            direction = info.direction,
             secondsToArrival = seconds,
             remainingStops = info.remainingStops,
             isExpress = info.isExpress,

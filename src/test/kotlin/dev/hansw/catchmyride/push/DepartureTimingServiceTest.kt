@@ -100,22 +100,76 @@ class DepartureTimingServiceTest {
         assertEquals("261", decision.routeName)
     }
 
+    // --- RECOMMENDED 배차 외삽 (도보 > 실시간 수평선 — 지하철 피드는 약 10분 이내 열차만 준다) ---
+
+    @Test
+    fun `RECOMMENDED - 도보가 길어 탑승 가능 차가 없으면 같은 방면 배차 간격으로 다음 차를 추정한다`() {
+        // 도보 20분(1200s), 상행 4분·8분 → 배차 240s → 외삽 12·16·20분 → 20분(1200s) 차가 첫 탑승 가능
+        val arrivals = listOf(
+            arrival("9호선 급행", 240, direction = "상행", walkSeconds = 1200),
+            arrival("9호선 급행", 480, direction = "상행", walkSeconds = 1200),
+        )
+        val decision = service.decide(recommendedSetting(walk = 20), LocalTime.of(8, 0), arrivals)!!
+        assertEquals(PushStage.REMIND, decision.stage) // 여유 0초 — 지금 나가면 딱 맞는다
+        assertEquals("9호선 급행", decision.routeName)
+        assertEquals(20, decision.minutesToArrival)
+        assertEquals(true, decision.estimated)
+    }
+
+    @Test
+    fun `RECOMMENDED - 추정 차까지의 여유가 버퍼 이내면 PRE`() {
+        // 도보 10분(600s), 상행 3분·9분 → 배차 360s → 외삽 15분(900s) → 여유 300s ≤ 버퍼 300s
+        val arrivals = listOf(
+            arrival("9호선 급행", 180, direction = "상행", walkSeconds = 600),
+            arrival("9호선 급행", 540, direction = "상행", walkSeconds = 600),
+        )
+        val decision = service.decide(recommendedSetting(buffer = 5, walk = 10), LocalTime.of(8, 0), arrivals)!!
+        assertEquals(PushStage.PRE, decision.stage)
+        assertEquals(LocalTime.of(8, 5), decision.departureTime)
+        assertEquals(15, decision.minutesToArrival)
+        assertEquals(true, decision.estimated)
+    }
+
+    @Test
+    fun `RECOMMENDED - 방면 정보가 없으면 추정하지 않는다 (틀린 확신보다 침묵)`() {
+        val arrivals = listOf(
+            arrival("9호선 급행", 240, walkSeconds = 1200),
+            arrival("9호선 급행", 480, walkSeconds = 1200),
+        )
+        assertNull(service.decide(recommendedSetting(walk = 20), LocalTime.of(8, 0), arrivals))
+    }
+
+    @Test
+    fun `RECOMMENDED - 같은 방면 열차가 1대뿐이면 배차를 알 수 없어 추정하지 않는다`() {
+        val arrivals = listOf(
+            arrival("9호선 급행", 240, direction = "상행", walkSeconds = 1200),
+            arrival("9호선 급행", 480, direction = "하행", walkSeconds = 1200),
+        )
+        assertNull(service.decide(recommendedSetting(walk = 20), LocalTime.of(8, 0), arrivals))
+    }
+
+    @Test
+    fun `RECOMMENDED - 탑승 가능한 차가 있으면 추정 없이 실시간 값을 쓴다`() {
+        val decision = service.decide(recommendedSetting(), LocalTime.of(8, 0), listOf(arrival("720", 600)))!!
+        assertEquals(false, decision.estimated)
+    }
+
     // --- 헬퍼 ---
 
     private fun fixedSetting(departure: String = "08:20", buffer: Int = 3) = setting(
         mode = NotificationMode.FIXED, fixedDepartureTime = departure, window = null, buffer = buffer,
     )
 
-    private fun recommendedSetting(buffer: Int = 3) = setting(
+    private fun recommendedSetting(buffer: Int = 3, walk: Int = 8) = setting(
         mode = NotificationMode.RECOMMENDED, fixedDepartureTime = null,
-        window = CommuteWindow("07:30", "09:00"), buffer = buffer,
+        window = CommuteWindow("07:30", "09:00"), buffer = buffer, walk = walk,
     )
 
-    private fun setting(mode: NotificationMode, fixedDepartureTime: String?, window: CommuteWindow?, buffer: Int) =
+    private fun setting(mode: NotificationMode, fixedDepartureTime: String?, window: CommuteWindow?, buffer: Int, walk: Int = 8) =
         CommuteSetting(
             home = GeoPoint(37.5219, 126.9245),
             stops = listOf(CommuteStop(StopType.SUBWAY, "여의도", "여의도역", listOf("9호선 급행"))),
-            walkMinutes = 8,
+            walkMinutes = walk,
             notificationMode = mode,
             fixedDepartureTime = fixedDepartureTime,
             commuteWindow = window,
@@ -123,14 +177,15 @@ class DepartureTimingServiceTest {
             activeDays = listOf("MON", "TUE", "WED", "THU", "FRI"),
         )
 
-    /** walkMinutes=8(480s) 기준 boardable을 계산해 만든 도착 정보 */
-    private fun arrival(route: String, seconds: Int?) = Arrival(
+    /** walkSeconds 기준 boardable을 계산해 만든 도착 정보 (기본 도보 8분=480s) */
+    private fun arrival(route: String, seconds: Int?, direction: String? = null, walkSeconds: Int = 480) = Arrival(
         stopDisplayName = "여의도역",
         routeName = route,
+        direction = direction,
         secondsToArrival = seconds,
         remainingStops = null,
         isExpress = null,
-        boardable = seconds != null && seconds >= 480,
+        boardable = seconds != null && seconds >= walkSeconds,
         status = ArrivalStatus.RELAXED,
         rawMessage = null,
     )

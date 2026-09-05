@@ -18,8 +18,10 @@ servers:
 security:
   - tossBearer: []
 tags:
+  - name: commute-routes
+    description: 통근 경로 (유저당 최대 5개 — 출근·퇴근 등 라벨 구분, 2026-09-05 §1-2 추가)
   - name: commute-setting
-    description: 통근 설정 (유저당 1개, MVP)
+    description: (레거시) 유저당 1개 시절의 통근 설정 — 첫 경로에 대한 어댑터로 유지
   - name: arrivals
     description: 라이브 뷰 도착 정보 (FR-501/502)
   - name: feedback
@@ -32,13 +34,72 @@ tags:
     description: 토스 로그인 토큰 교환 (S-3/C-1 — 2026-09-03 §8 추가, mTLS 인증서 설정 전까지 503)
 
 paths:
+  /api/v1/commute-routes:
+    get:
+      tags: [commute-routes]
+      summary: 통근 경로 목록 (생성순 — 첫 경로가 기본)
+      responses:
+        "200":
+          description: 경로 목록
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommuteRoutesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [commute-routes]
+      summary: 통근 경로 생성 (최대 5개)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommuteRouteRequest" }
+      responses:
+        "201":
+          description: 생성된 경로 (id는 서버 발급)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommuteRoute" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/commute-routes/{routeId}:
+    parameters:
+      - name: routeId
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      tags: [commute-routes]
+      summary: 통근 경로 수정
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommuteRouteRequest" }
+      responses:
+        "200":
+          description: 수정된 경로
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommuteRoute" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { $ref: "#/components/responses/SettingNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [commute-routes]
+      summary: 통근 경로 삭제
+      responses:
+        "204": { description: 삭제 완료 }
+        "404": { $ref: "#/components/responses/SettingNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/commute-setting:
     get:
       tags: [commute-setting]
-      summary: 통근 설정 조회
+      summary: (레거시) 첫 경로의 설정 조회
       responses:
         "200":
-          description: 저장된 통근 설정
+          description: 첫 경로의 통근 설정
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CommuteSetting" }
@@ -46,8 +107,8 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     put:
       tags: [commute-setting]
-      summary: 통근 설정 등록·수정 (업서트)
-      description: 유저당 1개이므로 생성·수정 모두 PUT.
+      summary: (레거시) 첫 경로 갱신 — 없으면 '출근' 라벨로 생성
+      description: 다중 경로(§1-2) 이전 클라이언트 호환용 어댑터.
       requestBody:
         required: true
         content:
@@ -63,7 +124,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     delete:
       tags: [commute-setting]
-      summary: 통근 설정 삭제 (알림도 중지)
+      summary: (레거시) 모든 경로 삭제 — 재온보딩 (알림도 중지)
       responses:
         "204": { description: 삭제 완료 }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -73,8 +134,14 @@ paths:
       tags: [arrivals]
       summary: 라이브 뷰 도착 정보
       description: |
-        저장된 통근 설정의 정류장·노선 기준으로 서버가 공공 API(캐시 TTL 15~30초)를 조회해 내려준다.
+        해당 경로 설정의 정류장·노선 기준으로 서버가 공공 API(캐시 TTL 15~30초)를 조회해 내려준다.
         클라이언트는 15~30초 간격 폴링 (FR-204). 오프라인 시 마지막 응답 + fetchedAt 유지 표시 (NFR-07).
+      parameters:
+        - name: routeId
+          in: query
+          required: false
+          schema: { type: string }
+          description: 대상 경로 — 생략 시 첫 경로 (레거시 호환)
       responses:
         "200":
           description: 도착 정보 목록 (secondsToArrival 오름차순, null 마지막)
@@ -372,6 +439,31 @@ components:
     DayOfWeek:
       type: string
       enum: [MON, TUE, WED, THU, FRI, SAT, SUN]
+    CommuteRoute:
+      type: object
+      required: [id, label, enabled, setting]
+      description: 통근 경로 (유저당 최대 5개) — FR-403·FR-405는 경로 단위로 적용
+      properties:
+        id: { type: string, description: 서버 발급 UUID (이관 행은 "migrated"), example: "550e8400-e29b-41d4-a716-446655440000" }
+        label: { type: string, description: 1~16자, 유저 내 중복 불가, example: 출근 }
+        enabled: { type: boolean, description: false = 이 경로 알림 일시 중지 }
+        setting: { $ref: "#/components/schemas/CommuteSetting" }
+    CommuteRouteRequest:
+      type: object
+      required: [label, setting]
+      description: 생성·수정 요청 — id는 URL 경로로만 전달
+      properties:
+        label: { type: string, example: 퇴근 }
+        enabled: { type: boolean, default: true }
+        setting: { $ref: "#/components/schemas/CommuteSetting" }
+    CommuteRoutesResponse:
+      type: object
+      required: [routes]
+      properties:
+        routes:
+          type: array
+          maxItems: 5
+          items: { $ref: "#/components/schemas/CommuteRoute" }
     CommuteSetting:
       type: object
       required: [home, stops, walkMinutes, notificationMode, bufferMinutes, activeDays]
@@ -447,6 +539,11 @@ components:
       properties:
         stopDisplayName: { type: string, example: 여의도환승센터 }
         routeName: { type: string, example: "720" }
+        direction:
+          type: string
+          nullable: true
+          description: 방면 — 지하철 상행/하행 등, 버스는 null
+          example: 상행
         secondsToArrival:
           type: integer
           nullable: true

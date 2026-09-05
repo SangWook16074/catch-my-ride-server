@@ -31,7 +31,7 @@ class BoardingFeedbackLiveModeTest {
         assertEquals(400, rejected.statusCode(), rejected.body())
         assertTrue(rejected.body().contains("INVALID_REQUEST"), rejected.body())
 
-        pushLog.record("dev-user", LocalDate.parse("2026-09-02"), PushStage.REMIND, "9호선 급행", delivered = true)
+        pushLog.record("dev-user", "r1", LocalDate.parse("2026-09-02"), PushStage.REMIND, "9호선 급행", delivered = true)
         val accepted = request(environment, "POST", "/api/v1/boarding-feedback", body)
         assertEquals(201, accepted.statusCode(), accepted.body())
     }

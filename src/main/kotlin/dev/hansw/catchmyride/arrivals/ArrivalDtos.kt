@@ -11,6 +11,7 @@ data class ArrivalsResponse(
 data class Arrival(
     val stopDisplayName: String,
     val routeName: String,          // 통근 설정에 저장된 표기 그대로
+    val direction: String?,         // 방면(지하철 상행/하행 등, 버스는 null) — 배차 외삽(S-4)의 그룹 키
     val secondsToArrival: Int?,     // null = 실시간 정보 없음
     val remainingStops: Int?,
     val isExpress: Boolean?,        // 지하철만, 버스는 null (FR-203)
