@@ -58,6 +58,18 @@ class BoardingFeedbackController(
 @Repository
 class BoardingFeedbackRepository(private val jdbc: JdbcClient) {
 
+    /** §3-1 버퍼 추천용 — 최근 알림일 순 결과(BOARDED/MISSED) 문자열 */
+    fun recentResults(userKey: String, limit: Int): List<String> =
+        jdbc.sql(
+            """
+            SELECT result FROM boarding_feedback
+            WHERE user_key = :userKey ORDER BY notified_date DESC LIMIT :limit
+            """.trimIndent(),
+        )
+            .param("userKey", userKey).param("limit", limit)
+            .query { rs, _ -> rs.getString("result") }
+            .list()
+
     @Transactional
     fun upsert(userKey: String, notifiedDate: LocalDate, result: String) {
         jdbc.sql("DELETE FROM boarding_feedback WHERE user_key = :userKey AND notified_date = :date")
