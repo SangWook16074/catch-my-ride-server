@@ -46,7 +46,10 @@ class PushNotificationSchedulerTest {
     }
 
     private fun scheduler() =
-        PushNotificationScheduler(routes, pushLog, arrivalsService, DepartureTimingService(), client, clock)
+        PushNotificationScheduler(
+            routes, pushLog, arrivalsService, DepartureTimingService(), client,
+            HolidayCalendar(PushProperties()), clock,
+        )
 
     @Test
     fun `경로 1회당 PRE·REMIND 각 1회, 총 2회를 넘지 않는다`() {
@@ -114,6 +117,24 @@ class PushNotificationSchedulerTest {
         clock.set("2026-09-01T08:19:30")
         scheduler().tick()
         assertEquals(0, client.sends.size, "FR-405 위반: ${client.sends}")
+    }
+
+    @Test
+    fun `평일만 출근하는 경로는 공휴일에 발송하지 않는다`() {
+        // 2026-10-05(월)은 개천절 대체공휴일 — activeDays에 MON이 있어도 쉰다 (FR-405 확장)
+        routes.insert("push-test-holiday", route("r1", "출근", fixedSetting(activeDays = listOf("MON"))))
+        clock.set("2026-10-05T08:19:30")
+        scheduler().tick()
+        assertEquals(0, client.sends.size, "공휴일 미발송 위반: ${client.sends}")
+    }
+
+    @Test
+    fun `주말이 포함된 경로는 공휴일에도 발송한다`() {
+        // 교대 근무처럼 달력을 따르지 않는 경로 — 공휴일 스킵을 적용하지 않는다
+        routes.insert("push-test-holiday-shift", route("r1", "출근", fixedSetting(activeDays = listOf("MON", "SAT"))))
+        clock.set("2026-10-05T08:19:30")
+        scheduler().tick()
+        assertEquals(1, client.sends.size, "주말 포함 경로는 공휴일에도 발송: ${client.sends}")
     }
 
     @Test

@@ -14,6 +14,8 @@ data class PushProperties(
     val apiKey: String = "",
     val templatePre: String = "",
     val templateRemind: String = "",
+    /** 내장 표(HolidayCalendar) 밖의 임시공휴일 — 쉼표 구분 "YYYY-MM-DD,..." */
+    val extraHolidays: String = "",
 ) {
     /** 실발송 가능 상태 — 피드백 §3 "발송 이력 있는 날만 접수" 검증도 이 상태에서만 켠다 */
     val live: Boolean get() = apiKey.isNotBlank()

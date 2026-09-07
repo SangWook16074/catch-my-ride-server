@@ -17,6 +17,10 @@ data class CommuteSetting(
     val bufferMinutes: Int,
     val activeDays: List<String>,
 ) {
+    /** 평일 출근 경로 판단 — 공휴일 미발송(FR-405 확장)은 달력대로 일하는 경로에만 적용한다 */
+    val weekdaysOnly: Boolean
+        get() = activeDays.none { it == "SAT" || it == "SUN" }
+
     fun validate() {
         if (stops.isEmpty()) throw ApiException.invalidRequest("정류장을 1개 이상 등록해야 합니다")
         stops.firstOrNull { it.routes.isEmpty() }

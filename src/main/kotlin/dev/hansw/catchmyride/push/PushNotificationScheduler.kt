@@ -21,6 +21,8 @@ import java.time.ZonedDateTime
  *   경로가 여러 개면(출근·퇴근) 각 경로가 독립으로 판단·발송된다
  * - REMIND가 나간 날은 그 경로의 발송 종료, PRE는 REMIND 이후에 나가지 않는다
  * - activeDays에 없는 요일은 발송하지 않는다 (FR-405)
+ * - 평일만 출근하는 경로는 공휴일에도 발송하지 않는다 (FR-405 확장, 2026-09-07 명세서 §9).
+ *   주말이 포함된 경로(교대 근무 등)는 달력을 따르지 않는 근무라 공휴일에도 그대로 보낸다
  * - 시간대 밖 경로는 공공 API 폴링 자체를 하지 않는다 (NFR-08 쿼터 보호)
  *
  * 발송 순서는 "로그 선기록 → 발송 → delivered 갱신, 실패 시 로그 롤백" — 어떤 크래시 시점에도
@@ -34,6 +36,7 @@ class PushNotificationScheduler(
     private val arrivalsService: ArrivalsService,
     private val timing: DepartureTimingService,
     private val client: AppsInTossPushClient,
+    private val holidays: HolidayCalendar,
     private val clock: Clock,
 ) {
 
@@ -56,6 +59,7 @@ class PushNotificationScheduler(
     private fun process(userKey: String, route: CommuteRoute, today: LocalDate, now: LocalTime, day: DayOfWeek) {
         val setting = route.setting
         if (DAY_CODES.getValue(day) !in setting.activeDays) return // FR-405
+        if (setting.weekdaysOnly && holidays.isHoliday(today)) return // FR-405 확장 — 공휴일 미발송
         if (!timing.withinCandidateWindow(setting, now)) return    // 공공 API 호출 전 싸구려 필터
 
         val sent = pushLog.sentStages(userKey, route.id, today)
