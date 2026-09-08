@@ -8,11 +8,8 @@ import org.springframework.stereotype.Component
 import org.springframework.web.client.ResourceAccessException
 import org.springframework.web.client.RestClient
 import org.springframework.web.client.RestClientResponseException
-import java.io.FileInputStream
 import java.net.http.HttpClient
-import java.security.KeyStore
 import java.time.Duration
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 
 /**
@@ -120,14 +117,5 @@ class TossOAuthClient(private val props: TossAuthProperties) : TossAuth {
         return (body["success"] as? Map<*, *>) ?: body
     }
 
-    private fun mtlsContext(): SSLContext {
-        val password = props.keystorePassword.toCharArray()
-        val keyStore = KeyStore.getInstance("PKCS12").apply {
-            FileInputStream(props.keystorePath).use { load(it, password) }
-        }
-        val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-            .apply { init(keyStore, password) }
-            .keyManagers
-        return SSLContext.getInstance("TLS").apply { init(keyManagers, null, null) }
-    }
+    private fun mtlsContext(): SSLContext = mtlsSslContext(props.keystorePath, props.keystorePassword)
 }

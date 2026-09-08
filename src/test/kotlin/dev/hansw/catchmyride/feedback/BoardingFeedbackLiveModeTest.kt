@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = ["DATA_GO_KR_KEY=", "SEOUL_OPEN_DATA_KEY=", "push.api-key=test-live-key"],
+    properties = ["DATA_GO_KR_KEY=", "SEOUL_OPEN_DATA_KEY=", "push.keystore-path=test-live-keystore.p12"],
 )
 class BoardingFeedbackLiveModeTest {
 

@@ -16,6 +16,7 @@ services:
       - "5000:5000" # 0.0.0.0 바인딩 — 실기기(LAN)에서 Mac IP로 접근 가능해야 함. VM에선 방화벽+caddy가 외부 공개를 통제
     volumes:
       - ./spike-logs:/app/spike-logs # 폴링 JSONL을 호스트에 영속화
+      - ./secrets:/app/secrets:ro # mTLS 인증서(toss-mtls.p12) — .env의 TOSS_MTLS_KEYSTORE=/app/secrets/toss-mtls.p12
     depends_on:
       postgres:
         condition: service_healthy # 기동 시 schema.sql 실행이 DB를 필요로 한다

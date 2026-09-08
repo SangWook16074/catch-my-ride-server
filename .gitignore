@@ -48,3 +48,6 @@ backups/
 .omc/
 **/.omc/
 .DS_Store
+
+### mTLS 인증서 (호스트 secrets/ → 컨테이너 /app/secrets)
+secrets/
