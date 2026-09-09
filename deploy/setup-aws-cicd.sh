@@ -11,8 +11,9 @@ REGION=ap-northeast-2
 ECR_REPO=catch-my-ride-server
 IAM_USER=catch-my-ride-deploy
 GH_REPO=SangWook16074/catch-my-ride-server
-EC2_HOST=3.37.219.135
-EC2_USER=ec2-user
+# 퍼블릭 저장소라 호스트는 하드코딩하지 않는다 — 실행 시 환경변수로 주입
+EC2_HOST="${EC2_HOST:?EC2_HOST 환경변수를 지정하세요 (예: EC2_HOST=1.2.3.4 deploy/setup-aws-cicd.sh key.pem)}"
+EC2_USER="${EC2_USER:-ec2-user}"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 echo "AWS 계정: $ACCOUNT_ID / 리전: $REGION"

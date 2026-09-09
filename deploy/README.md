@@ -1,7 +1,7 @@
 # deploy/ — 배포 절차
 
 > 기획·클라이언트는 [nochijima](https://github.com/SangWook16074/nochijima) 저장소, 이 저장소는 서버 단독.
-> 배포 대상: 기존 보유 EC2(3.37.219.135) + ECR 이미지 관리 + GitHub Actions 자동 배포.
+> 배포 대상: 기존 보유 EC2(IP는 GitHub Secret EC2_HOST) + ECR 이미지 관리 + GitHub Actions 자동 배포.
 
 ## EC2 최초 셋업 (1회)
 
@@ -57,7 +57,7 @@ git tag v0.1.0 && git push origin v0.1.0
    ```bash
    gh secret set AWS_ACCESS_KEY_ID -R SangWook16074/catch-my-ride-server
    gh secret set AWS_SECRET_ACCESS_KEY -R SangWook16074/catch-my-ride-server
-   gh secret set EC2_HOST -R SangWook16074/catch-my-ride-server --body "3.37.219.135"
+   gh secret set EC2_HOST -R SangWook16074/catch-my-ride-server --body "<EC2 공인 IP>"
    gh secret set EC2_USER -R SangWook16074/catch-my-ride-server --body "ec2-user"
    gh secret set EC2_SSH_KEY -R SangWook16074/catch-my-ride-server < ~/.ssh/<EC2키>.pem
    ```
