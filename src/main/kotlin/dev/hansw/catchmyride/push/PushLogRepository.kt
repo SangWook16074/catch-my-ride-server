@@ -7,9 +7,13 @@ import java.time.LocalDateTime
 
 enum class PushStage { PRE, REMIND }
 
+/** 경로의 그날 마지막 발송 — 스케줄러가 다음 스테이지/사이클을 판단하는 근거 */
+data class LastPush(val stage: PushStage, val cycle: Int)
+
 /**
- * push_log 저장소 — FR-403(경로 1회당 최대 2회)의 강제 장치. 경로(routeId) 단위로 스테이지 중복을 막는다.
- * 발송 직전에 기록하고 실패 시 지워서(다음 틱 재시도) 어떤 경로로도 같은 스테이지가 두 번 나가지 않게 한다.
+ * push_log 저장소 — FR-403(사이클당 최대 2회)의 강제 장치. 경로(routeId)×사이클 단위로 스테이지 중복을 막는다.
+ * 발송 직전에 기록하고 실패 시 지워서(다음 틱 재시도) 같은 사이클의 같은 스테이지가 두 번 나가지 않게 한다.
+ * FIXED 모드는 cycle 0 하나(하루 2회), RECOMMENDED는 시간대 안에서 사이클이 늘어난다 (2026-09-09 FR-403 개정).
  */
 @Repository
 class PushLogRepository(private val jdbc: JdbcClient) {
@@ -22,17 +26,32 @@ class PushLogRepository(private val jdbc: JdbcClient) {
             .query { rs, _ -> PushStage.valueOf(rs.getString("stage")) }
             .list().toSet()
 
+    fun lastEntry(userKey: String, routeId: String, date: LocalDate): LastPush? =
+        jdbc.sql(
+            """
+            SELECT stage, cycle FROM push_log
+            WHERE user_key = :userKey AND route_id = :routeId AND notified_date = :date
+            ORDER BY sent_at DESC, cycle DESC LIMIT 1
+            """.trimIndent(),
+        )
+            .param("userKey", userKey).param("routeId", routeId).param("date", date)
+            .query { rs, _ -> LastPush(PushStage.valueOf(rs.getString("stage")), rs.getInt("cycle")) }
+            .optional().orElse(null)
+
     /** API.md §3 — "그날 알림 발송 이력이 없으면 400" 검증용. 경로 무관하게 그날 발송 여부만 본다 */
     fun hasAny(userKey: String, date: LocalDate): Boolean =
         jdbc.sql("SELECT COUNT(*) FROM push_log WHERE user_key = :userKey AND notified_date = :date")
             .param("userKey", userKey).param("date", date)
             .query { rs, _ -> rs.getLong(1) }.single() > 0
 
-    fun record(userKey: String, routeId: String, date: LocalDate, stage: PushStage, routeName: String?, delivered: Boolean) {
+    fun record(
+        userKey: String, routeId: String, date: LocalDate, stage: PushStage,
+        routeName: String?, delivered: Boolean, cycle: Int = 0,
+    ) {
         jdbc.sql(
             """
-            INSERT INTO push_log (user_key, route_id, notified_date, stage, route_name, delivered, sent_at)
-            VALUES (:userKey, :routeId, :date, :stage, :routeName, :delivered, :sentAt)
+            INSERT INTO push_log (user_key, route_id, notified_date, stage, route_name, delivered, sent_at, cycle)
+            VALUES (:userKey, :routeId, :date, :stage, :routeName, :delivered, :sentAt, :cycle)
             """.trimIndent(),
         )
             .param("userKey", userKey)
@@ -42,28 +61,31 @@ class PushLogRepository(private val jdbc: JdbcClient) {
             .param("routeName", routeName)
             .param("delivered", delivered)
             .param("sentAt", LocalDateTime.now())
+            .param("cycle", cycle)
             .update()
     }
 
-    fun markDelivered(userKey: String, routeId: String, date: LocalDate, stage: PushStage) {
+    fun markDelivered(userKey: String, routeId: String, date: LocalDate, stage: PushStage, cycle: Int = 0) {
         jdbc.sql(
             """
             UPDATE push_log SET delivered = TRUE
-            WHERE user_key = :userKey AND route_id = :routeId AND notified_date = :date AND stage = :stage
+            WHERE user_key = :userKey AND route_id = :routeId AND notified_date = :date AND stage = :stage AND cycle = :cycle
             """.trimIndent(),
         )
             .param("userKey", userKey).param("routeId", routeId).param("date", date).param("stage", stage.name)
+            .param("cycle", cycle)
             .update()
     }
 
-    fun delete(userKey: String, routeId: String, date: LocalDate, stage: PushStage) {
+    fun delete(userKey: String, routeId: String, date: LocalDate, stage: PushStage, cycle: Int = 0) {
         jdbc.sql(
             """
             DELETE FROM push_log
-            WHERE user_key = :userKey AND route_id = :routeId AND notified_date = :date AND stage = :stage
+            WHERE user_key = :userKey AND route_id = :routeId AND notified_date = :date AND stage = :stage AND cycle = :cycle
             """.trimIndent(),
         )
             .param("userKey", userKey).param("routeId", routeId).param("date", date).param("stage", stage.name)
+            .param("cycle", cycle)
             .update()
     }
 }

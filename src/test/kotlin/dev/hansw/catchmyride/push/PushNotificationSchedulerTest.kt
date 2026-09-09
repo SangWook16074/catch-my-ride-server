@@ -1,12 +1,20 @@
 package dev.hansw.catchmyride.push
 
+import dev.hansw.catchmyride.arrivals.Arrival
+import dev.hansw.catchmyride.arrivals.ArrivalStatus
+import dev.hansw.catchmyride.arrivals.ArrivalsResponse
 import dev.hansw.catchmyride.arrivals.ArrivalsService
 import dev.hansw.catchmyride.commute.CommuteRoute
 import dev.hansw.catchmyride.commute.CommuteRouteRepository
 import dev.hansw.catchmyride.commute.CommuteSetting
 import dev.hansw.catchmyride.commute.CommuteStop
+import dev.hansw.catchmyride.commute.CommuteWindow
 import dev.hansw.catchmyride.commute.GeoPoint
 import dev.hansw.catchmyride.commute.NotificationMode
+import dev.hansw.catchmyride.spike.SpikeProperties
+import dev.hansw.catchmyride.spike.adapter.GbisBusAdapter
+import dev.hansw.catchmyride.spike.adapter.SeoulSubwayAdapter
+import dev.hansw.catchmyride.spike.adapter.TopisBusAdapter
 import dev.hansw.catchmyride.stops.StopType
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -34,6 +42,10 @@ class PushNotificationSchedulerTest {
     @Autowired lateinit var pushLog: PushLogRepository
     @Autowired lateinit var arrivalsService: ArrivalsService
     @Autowired lateinit var jdbc: JdbcClient
+    @Autowired lateinit var topis: TopisBusAdapter
+    @Autowired lateinit var gbis: GbisBusAdapter
+    @Autowired lateinit var subway: SeoulSubwayAdapter
+    @Autowired lateinit var spikeProps: SpikeProperties
 
     private val clock = MutableClock()
     private val client = RecordingPushClient()
@@ -45,9 +57,9 @@ class PushNotificationSchedulerTest {
         jdbc.sql("DELETE FROM push_log").update()
     }
 
-    private fun scheduler() =
+    private fun scheduler(arrivals: ArrivalsService = arrivalsService) =
         PushNotificationScheduler(
-            routes, pushLog, arrivalsService, DepartureTimingService(), client,
+            routes, pushLog, arrivals, DepartureTimingService(), client,
             HolidayCalendar(PushProperties()), clock,
         )
 
@@ -154,6 +166,69 @@ class PushNotificationSchedulerTest {
         assertEquals(setOf(PushStage.REMIND), pushLog.sentStages(userKey, "r1", clock.today()))
     }
 
+    @Test
+    fun `추천 모드는 시간대 안이면 리마인드 후에도 다음 차로 새 사이클을 반복한다`() {
+        val userKey = "push-test-window-cycles"
+        routes.insert(userKey, route("r1", "출근", recommendedSetting(activeDays = listOf("TUE"))))
+        val stub = StubArrivalsService()
+        val scheduler = scheduler(stub)
+
+        // 사이클 1 — 첫 차: 출발까지 120초(버퍼 3분 안) → PRE, 40초 → REMIND. 도보 8분(480초) 기준
+        clock.set("2026-09-01T08:10:00")
+        stub.arrivals = listOf(arrival(seconds = 600))
+        scheduler.tick()
+        clock.set("2026-09-01T08:11:00")
+        stub.arrivals = listOf(arrival(seconds = 520))
+        scheduler.tick()
+        assertEquals(listOf(PushStage.PRE, PushStage.REMIND), client.sends.map { it.stage })
+
+        // REMIND 직후 또 REMIND 조건 — PRE를 거치지 않았으므로 발송 금지 (스팸 방지)
+        clock.set("2026-09-01T08:11:30")
+        stub.arrivals = listOf(arrival(seconds = 490))
+        scheduler.tick()
+        assertEquals(2, client.sends.size, "REMIND 연속 발송 금지: ${client.sends}")
+
+        // 다음 차가 아직 여유(출발까지 220초 > 버퍼) — 침묵
+        clock.set("2026-09-01T08:15:00")
+        stub.arrivals = listOf(arrival(seconds = 700))
+        scheduler.tick()
+        assertEquals(2, client.sends.size)
+
+        // 사이클 2 — 다음 차가 버퍼 안으로: PRE → REMIND 반복
+        clock.set("2026-09-01T08:16:00")
+        stub.arrivals = listOf(arrival(seconds = 640))
+        scheduler.tick()
+        clock.set("2026-09-01T08:17:30")
+        stub.arrivals = listOf(arrival(seconds = 530))
+        scheduler.tick()
+        assertEquals(
+            listOf(PushStage.PRE, PushStage.REMIND, PushStage.PRE, PushStage.REMIND),
+            client.sends.map { it.stage },
+            "시간대 안 사이클 반복 (2026-09-09 FR-403 개정): ${client.sends}",
+        )
+
+        // 시간대(09:00) 밖으로 나가면 종료
+        clock.set("2026-09-01T09:00:31")
+        stub.arrivals = listOf(arrival(seconds = 600))
+        scheduler.tick()
+        assertEquals(4, client.sends.size, "시간대 밖 발송 금지: ${client.sends}")
+    }
+
+    @Test
+    fun `정시 모드는 개정 후에도 하루 최대 2회를 유지한다`() {
+        val userKey = "push-test-fixed-cap"
+        routes.insert(userKey, route("r1", "출근", fixedSetting(activeDays = listOf("TUE"))))
+        val scheduler = scheduler()
+
+        clock.set("2026-09-01T08:17:30")
+        scheduler.tick() // PRE
+        clock.set("2026-09-01T08:19:30")
+        scheduler.tick() // REMIND
+        clock.set("2026-09-01T08:20:30") // 아직 REMIND 허용 구간이지만 이미 종료
+        scheduler.tick()
+        assertEquals(2, client.sends.size, "FIXED 하루 2회 상한 유지: ${client.sends}")
+    }
+
     // --- 헬퍼 ---
 
     private fun route(id: String, label: String, setting: CommuteSetting, enabled: Boolean = true) =
@@ -169,6 +244,30 @@ class PushNotificationSchedulerTest {
         bufferMinutes = 3,
         activeDays = activeDays,
     )
+
+    private fun recommendedSetting(activeDays: List<String>) = CommuteSetting(
+        home = GeoPoint(37.5219, 126.9245),
+        stops = listOf(CommuteStop(StopType.SUBWAY, "여의도", "여의도역", listOf("9호선 급행"))),
+        walkMinutes = 8,
+        notificationMode = NotificationMode.RECOMMENDED,
+        fixedDepartureTime = null,
+        commuteWindow = CommuteWindow("08:00", "09:00"),
+        bufferMinutes = 3,
+        activeDays = activeDays,
+    )
+
+    private fun arrival(seconds: Int) = Arrival(
+        stopDisplayName = "여의도역", routeName = "9호선 급행", direction = "상행",
+        secondsToArrival = seconds, remainingStops = 2, isExpress = true,
+        boardable = true, status = ArrivalStatus.RELAXED, rawMessage = null,
+    )
+
+    /** 공공 API 대신 테스트가 도착 목록을 주입한다 — RECOMMENDED 모드 검증용 */
+    private inner class StubArrivalsService : ArrivalsService(routes, topis, gbis, subway, spikeProps) {
+        var arrivals: List<Arrival> = emptyList()
+        override fun arrivalsFor(setting: CommuteSetting): ArrivalsResponse =
+            ArrivalsResponse(fetchedAt = "", realtimeAvailable = true, walkMinutes = setting.walkMinutes, arrivals = arrivals)
+    }
 
     private inner class RecordingPushClient : AppsInTossPushClient(PushProperties()) {
         val sends = mutableListOf<PushDecision>()

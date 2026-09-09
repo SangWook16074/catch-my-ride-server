@@ -64,8 +64,12 @@ CREATE TABLE IF NOT EXISTS push_log (
 
 -- 기존 push_log(경로 개념 이전) 이관 — 컬럼 추가 후 PK를 경로 포함으로 교체 (drop+add 쌍이라 멱등)
 ALTER TABLE push_log ADD COLUMN IF NOT EXISTS route_id VARCHAR(36) DEFAULT 'migrated' NOT NULL;
+
+-- 추천 모드 시간대 반복 발송(2026-09-09, FR-403 개정) — 사이클 축 추가.
+-- FIXED는 cycle 0 고정(하루 2회 유지), RECOMMENDED는 리마인드 후에도 시간대 안이면 다음 차로 사이클을 늘린다
+ALTER TABLE push_log ADD COLUMN IF NOT EXISTS cycle SMALLINT DEFAULT 0 NOT NULL;
 ALTER TABLE push_log DROP CONSTRAINT IF EXISTS push_log_pkey;
-ALTER TABLE push_log ADD CONSTRAINT push_log_pkey PRIMARY KEY (user_key, route_id, notified_date, stage);
+ALTER TABLE push_log ADD CONSTRAINT push_log_pkey PRIMARY KEY (user_key, route_id, notified_date, stage, cycle);
 
 -- FR-601 탑승 피드백 — 유저·날짜당 1건, 재제출은 갱신 (API.md §3). 경로 구분은 푸시 랜딩에 routeId가 실리면 추가.
 CREATE TABLE IF NOT EXISTS boarding_feedback (
