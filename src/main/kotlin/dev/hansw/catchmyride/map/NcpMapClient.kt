@@ -18,6 +18,7 @@ data class NcpMapProperties(
     val key: String = "",
     val staticMapUrl: String = "https://maps.apigw.ntruss.com/map-static/v2/raster",
     val geocodeUrl: String = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode",
+    val reverseGeocodeUrl: String = "https://maps.apigw.ntruss.com/map-reversegeocode/v2/gc",
 )
 
 /** NCP Maps 상류 호출 — 파싱·검증은 컨트롤러 몫, 여기는 인증 헤더와 전송만 담당한다. */
@@ -38,6 +39,11 @@ class NcpMapClient(private val props: NcpMapProperties) {
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8)
         return get("${props.geocodeUrl}?query=$encoded").body(String::class.java).orEmpty()
     }
+
+    /** §7-1 — 좌표 → 주소. coords는 `경도,위도` 순서 (staticMap과 같은 NCP 규약) */
+    fun reverseGeocode(lat: Double, lng: Double): String =
+        get("${props.reverseGeocodeUrl}?coords=$lng,$lat&orders=roadaddr,addr&output=json")
+            .body(String::class.java).orEmpty()
 
     private fun get(url: String) =
         rest.get().uri(URI.create(url))

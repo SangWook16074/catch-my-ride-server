@@ -44,6 +44,28 @@ class GeocodeParsingTest {
     }
 
     @Test
+    fun `역지오코딩 - roadaddr와 addr을 각각 조립한다`() {
+        val body = """
+            {"status":{"code":0},"results":[
+              {"name":"addr","region":{"area1":{"name":"경기도"},"area2":{"name":"성남시 분당구"},"area3":{"name":"정자동"},"area4":{"name":""}},
+               "land":{"type":"1","number1":"178","number2":"1"}},
+              {"name":"roadaddr","region":{"area1":{"name":"경기도"},"area2":{"name":"성남시 분당구"},"area3":{"name":"정자동"},"area4":{"name":""}},
+               "land":{"name":"정자일로","number1":"95","number2":""}}
+            ]}
+        """.trimIndent()
+        val result = controller.parseReverse(body)
+        assertEquals("경기도 성남시 분당구 정자일로 95", result.roadAddress)
+        assertEquals("경기도 성남시 분당구 정자동 178-1", result.jibunAddress)
+    }
+
+    @Test
+    fun `역지오코딩 - 결과 없으면 빈 문자열 두 개`() {
+        val result = controller.parseReverse("""{"status":{"code":3,"name":"no results"},"results":[]}""")
+        assertEquals("", result.roadAddress)
+        assertEquals("", result.jibunAddress)
+    }
+
+    @Test
     fun `최대 10건으로 자른다, addresses 없으면 빈 배열`() {
         val many = (1..15).joinToString(",") { """{"roadAddress":"주소$it","jibunAddress":"","x":"127.0","y":"37.0"}""" }
         assertEquals(10, controller.parse("""{"addresses":[$many]}""").size)
