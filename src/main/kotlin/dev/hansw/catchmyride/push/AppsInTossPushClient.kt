@@ -19,7 +19,8 @@ import java.time.Duration
  *
  * keystore 또는 해당 스테이지 템플릿 코드가 비어 있으면 dry-run(로그만 남기고 미발송).
  * 실패는 1회 즉시 재시도(S-6) 후 예외 — 스케줄러가 push_log를 되돌려 다음 틱에 다시 시도한다.
- * HTTP 200이라도 응답 resultType=FAIL이면 실패로 취급한다.
+ * HTTP 200이라도 응답 resultType=FAIL이면 실패로 취급한다. resultType=SUCCESS인데 sentPushCount=0인
+ * 유저 단위 미전달(약관 미동의 등)은 재시도 없이 미전달(false)로만 기록한다.
  * 발송 한도(앱 15,000회/분·유저 10회/분, NFR-08)는 유저당 하루 2회 구조상 도달 불가라 별도 제어 없음.
  */
 @Component
@@ -73,6 +74,16 @@ class AppsInTossPushClient(private val props: PushProperties) {
                 if (resultType == "FAIL") {
                     val error = response["error"] as? Map<*, *>
                     throw IllegalStateException("send-message FAIL — code=${error?.get("errorCode")} reason=${error?.get("reason")}")
+                }
+                // resultType=SUCCESS라도 유저 단위 전달 실패가 detail.fail에 숨어 있다 (예: TERMS_DISAGREED_MEMBER —
+                // 2026-09-09 리마인드 미수신 사고). 재시도해도 같은 유저 상태면 결과가 같으니 미전달로 기록만 하고 끝낸다.
+                val success = response?.get("success") as? Map<*, *>
+                val sentPushCount = (success?.get("sentPushCount") as? Number)?.toInt()
+                if (sentPushCount == 0) {
+                    val failReason = ((success["fail"] as? Map<*, *>)?.get("sentPush") as? List<*>)
+                        ?.firstNotNullOfOrNull { (it as? Map<*, *>)?.get("reachedFailReason") }
+                    log.warn("푸시 미전달(응답은 SUCCESS) — user={} stage={} reason={}", userKey, decision.stage, failReason)
+                    return false
                 }
                 return true
             } catch (e: Exception) {
