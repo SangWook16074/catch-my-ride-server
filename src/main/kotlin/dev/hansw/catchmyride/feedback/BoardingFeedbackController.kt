@@ -70,6 +70,17 @@ class BoardingFeedbackRepository(private val jdbc: JdbcClient) {
             .query { rs, _ -> rs.getString("result") }
             .list()
 
+    /** S-5 반복 발송 중단용 — 그날 "탔어요"가 접수됐는가 (이미 탄 유저에게 다음 차 안내는 소음) */
+    fun boardedOn(userKey: String, date: LocalDate): Boolean =
+        jdbc.sql(
+            """
+            SELECT COUNT(*) FROM boarding_feedback
+            WHERE user_key = :userKey AND notified_date = :date AND result = 'BOARDED'
+            """.trimIndent(),
+        )
+            .param("userKey", userKey).param("date", date)
+            .query { rs, _ -> rs.getLong(1) }.single() > 0
+
     @Transactional
     fun upsert(userKey: String, notifiedDate: LocalDate, result: String) {
         jdbc.sql("DELETE FROM boarding_feedback WHERE user_key = :userKey AND notified_date = :date")

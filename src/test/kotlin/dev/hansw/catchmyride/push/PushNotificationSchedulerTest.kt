@@ -47,6 +47,7 @@ class PushNotificationSchedulerTest {
     @Autowired lateinit var subway: SeoulSubwayAdapter
     @Autowired lateinit var spikeProps: SpikeProperties
     @Autowired lateinit var pushTokens: PushTokenRepository
+    @Autowired lateinit var feedbackRepo: dev.hansw.catchmyride.feedback.BoardingFeedbackRepository
 
     private val clock = MutableClock()
     private val client = RecordingPushClient()
@@ -60,12 +61,13 @@ class PushNotificationSchedulerTest {
         jdbc.sql("DELETE FROM commute_route").update()
         jdbc.sql("DELETE FROM push_log").update()
         jdbc.sql("DELETE FROM push_token").update()
+        jdbc.sql("DELETE FROM boarding_feedback").update()
     }
 
     private fun scheduler(arrivals: ArrivalsService = arrivalsService) =
         PushNotificationScheduler(
             routes, pushLog, arrivals, DepartureTimingService(), client,
-            pushTokens, fcmClient, HolidayCalendar(PushProperties()), clock,
+            pushTokens, fcmClient, HolidayCalendar(PushProperties()), clock, feedbackRepo,
         )
 
     @Test
@@ -221,17 +223,17 @@ class PushNotificationSchedulerTest {
         scheduler.tick()
         assertEquals(2, client.sends.size, "REMIND 연속 발송 금지: ${client.sends}")
 
-        // 다음 차가 아직 여유(출발까지 220초 > 버퍼) — 침묵
-        clock.set("2026-09-01T08:15:00")
-        stub.arrivals = listOf(arrival(seconds = 700))
-        scheduler.tick()
-        assertEquals(2, client.sends.size)
-
-        // 사이클 2 — 다음 차가 버퍼 안으로: PRE → REMIND 반복
+        // 리마인드 후 10분 침묵 — 다음 차가 버퍼 안이어도 새 사이클 금지 (2026-09-10 폭주 제동)
         clock.set("2026-09-01T08:16:00")
         stub.arrivals = listOf(arrival(seconds = 640))
         scheduler.tick()
-        clock.set("2026-09-01T08:17:30")
+        assertEquals(2, client.sends.size, "사이클 간 10분 간격 위반: ${client.sends}")
+
+        // 사이클 2 — 리마인드(08:11) 후 10분 경과: PRE → REMIND
+        clock.set("2026-09-01T08:22:00")
+        stub.arrivals = listOf(arrival(seconds = 640))
+        scheduler.tick()
+        clock.set("2026-09-01T08:23:30")
         stub.arrivals = listOf(arrival(seconds = 530))
         scheduler.tick()
         assertEquals(
@@ -240,11 +242,44 @@ class PushNotificationSchedulerTest {
             "시간대 안 사이클 반복 (2026-09-09 FR-403 개정): ${client.sends}",
         )
 
-        // 시간대(09:00) 밖으로 나가면 종료
-        clock.set("2026-09-01T09:00:31")
-        stub.arrivals = listOf(arrival(seconds = 600))
+        // 사이클 3 — 마지막 허용 사이클
+        clock.set("2026-09-01T08:34:00")
+        stub.arrivals = listOf(arrival(seconds = 620))
         scheduler.tick()
-        assertEquals(4, client.sends.size, "시간대 밖 발송 금지: ${client.sends}")
+        clock.set("2026-09-01T08:35:00")
+        stub.arrivals = listOf(arrival(seconds = 530))
+        scheduler.tick()
+        assertEquals(6, client.sends.size)
+
+        // 하루 3사이클 상한 — 시간이 남고 간격이 지나도 4번째 사이클은 없다
+        clock.set("2026-09-01T08:46:00")
+        stub.arrivals = listOf(arrival(seconds = 620))
+        scheduler.tick()
+        assertEquals(6, client.sends.size, "하루 3사이클(6건) 상한 위반: ${client.sends}")
+    }
+
+    @Test
+    fun `탔어요 피드백이 오면 추가 사이클을 중단한다`() {
+        val userKey = "push-test-boarded-stop"
+        routes.insert(userKey, route("r1", "출근", recommendedSetting(activeDays = listOf("TUE"))))
+        val stub = StubArrivalsService()
+        val scheduler = scheduler(stub)
+
+        clock.set("2026-09-01T08:10:00")
+        stub.arrivals = listOf(arrival(seconds = 600))
+        scheduler.tick() // PRE
+        clock.set("2026-09-01T08:11:00")
+        stub.arrivals = listOf(arrival(seconds = 520))
+        scheduler.tick() // REMIND
+        assertEquals(2, client.sends.size)
+
+        feedbackRepo.upsert(userKey, clock.today(), "BOARDED")
+
+        // 간격(10분)이 지나 새 사이클 조건이 돼도, 이미 탄 유저에겐 보내지 않는다
+        clock.set("2026-09-01T08:25:00")
+        stub.arrivals = listOf(arrival(seconds = 640))
+        scheduler.tick()
+        assertEquals(2, client.sends.size, "BOARDED 후 추가 사이클 금지: ${client.sends}")
     }
 
     @Test
