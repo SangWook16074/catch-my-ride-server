@@ -39,6 +39,8 @@ class PushNotificationScheduler(
     private val arrivalsService: ArrivalsService,
     private val timing: DepartureTimingService,
     private val client: AppsInTossPushClient,
+    private val pushTokens: PushTokenRepository,
+    private val fcm: FcmPushClient,
     private val holidays: HolidayCalendar,
     private val clock: Clock,
 ) {
@@ -82,7 +84,12 @@ class PushNotificationScheduler(
 
         pushLog.record(userKey, route.id, today, decision.stage, decision.routeName, delivered = false, cycle = cycle)
         try {
-            if (client.send(userKey, decision)) pushLog.markDelivered(userKey, route.id, today, decision.stage, cycle)
+            // 발송 분기 (API.md §4-1): FCM 토큰이 있는 유저(스토어앱)는 FCM, 없으면 앱인토스.
+            // "선기록 → 발송 → delivered 갱신 → 실패 시 롤백" 불변식은 양쪽 공통
+            val delivered = pushTokens.find(userKey)
+                ?.let { fcm.send(userKey, it, decision, today) }
+                ?: client.send(userKey, decision)
+            if (delivered) pushLog.markDelivered(userKey, route.id, today, decision.stage, cycle)
         } catch (e: Exception) {
             pushLog.delete(userKey, route.id, today, decision.stage, cycle) // 다음 틱에 재시도
             log.warn(

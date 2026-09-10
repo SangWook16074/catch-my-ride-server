@@ -203,6 +203,36 @@ paths:
                   suggestedIncrementMinutes: { type: integer, example: 5 }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/push-token:
+    put:
+      tags: [push]
+      summary: 스토어앱 FCM 푸시 토큰 등록·갱신
+      description: |
+        스토어앱(catch_my_ride)의 FCM 등록 토큰을 유저(userKey)에 귀속시킨다 (API.md §4-1).
+        유저당 1개 — 재등록은 최신 값으로 갱신(멱등). 토큰이 등록된 유저는 발송 스케줄러가
+        앱인토스 send-message 대신 FCM으로 보낸다. FCM UNREGISTERED 응답 시 서버가 토큰을 폐기한다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, platform]
+              properties:
+                token: { type: string, maxLength: 512, example: "fcm-registration-token" }
+                platform: { type: string, enum: [IOS, ANDROID] }
+      responses:
+        "200":
+          description: 등록 완료
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  registered: { type: boolean, example: true }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/stops/search:
     get:
       tags: [stops]

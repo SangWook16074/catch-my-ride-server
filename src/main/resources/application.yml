@@ -49,6 +49,9 @@ push:
   template-pre: ${PUSH_TEMPLATE_PRE:}       # 콘솔 발송 코드: catch-my-ride-pre-start (docs/push-templates.md)
   template-remind: ${PUSH_TEMPLATE_REMIND:} # 콘솔 발송 코드: catch-my-ride-remind
   extra-holidays: ${PUSH_EXTRA_HOLIDAYS:}   # 새 임시공휴일 — "YYYY-MM-DD,YYYY-MM-DD" (HolidayCalendar 내장 표 밖의 날)
+  # 스토어앱 FCM (API.md §4-1) — Firebase 서비스 계정 키 JSON 경로. 비면 FCM은 dry-run.
+  # compose는 ./secrets 볼륨(/app/secrets)에 두고 경로를 넘긴다 (mTLS 인증서와 동일 방식)
+  fcm-service-account-path: ${FCM_SERVICE_ACCOUNT:}
 
 # 네이버클라우드 Maps (API.md §6 지도 미리보기·§7 지오코딩) — 키 미설정이면 두 엔드포인트는 503
 # (클라이언트가 OSM 폴백/안내 문구로 강등). 🧑 NCP 콘솔 > Maps에서 Static Map·Geocoding 이용 신청 후 발급

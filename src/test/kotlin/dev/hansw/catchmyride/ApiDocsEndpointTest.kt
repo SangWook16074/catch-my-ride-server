@@ -39,7 +39,7 @@ class ApiDocsEndpointTest {
     fun `openapi 스펙이 서빙되고 v0_2 계약의 핵심 경로를 담고 있다`() {
         val response = get("/openapi.yaml")
         assertEquals(200, response.statusCode())
-        for (path in listOf("/api/v1/commute-setting", "/api/v1/arrivals", "/api/v1/boarding-feedback", "/api/v1/stops/search")) {
+        for (path in listOf("/api/v1/commute-setting", "/api/v1/arrivals", "/api/v1/boarding-feedback", "/api/v1/stops/search", "/api/v1/push-token")) {
             assertTrue(response.body().contains(path), "스펙에 $path 누락 — API.md와 동기화할 것")
         }
     }

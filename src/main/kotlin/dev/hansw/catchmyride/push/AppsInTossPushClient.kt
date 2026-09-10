@@ -94,7 +94,15 @@ class AppsInTossPushClient(private val props: PushProperties) {
         throw lastError!!
     }
 
-    /** 콘솔 등록 템플릿(2026-09-08)의 변수는 `minute` 하나 — 값이 없으면 빈 문자열(렌더링에서 자연 탈락) */
-    private fun context(decision: PushDecision): Map<String, String> =
-        mapOf("minute" to decision.minutesToArrival?.toString().orEmpty())
+    /**
+     * 콘솔 등록 템플릿(2026-09-08)의 변수는 `minute` 하나 — 본문이 `{{minute}}분 후 도착해요.` 꼴이라
+     * 값이 비면 "분 후 도착해요."로 깨진다 (2026-09-10 오너 리포트). 실시간 정보가 없으면 `몇 `을 넣어
+     * "몇 분 후 도착해요."라는 자연스러운 폴백 문장으로 렌더링한다 — 템플릿 재검수 없이 해결.
+     */
+    internal fun context(decision: PushDecision): Map<String, String> =
+        mapOf("minute" to (decision.minutesToArrival?.toString() ?: MINUTE_FALLBACK))
+
+    private companion object {
+        const val MINUTE_FALLBACK = "몇 "
+    }
 }

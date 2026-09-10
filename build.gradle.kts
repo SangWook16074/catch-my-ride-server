@@ -28,6 +28,7 @@ dependencies {
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	implementation("tools.jackson.dataformat:jackson-dataformat-xml") // TOPIS·GBIS는 XML 응답
 	implementation("org.webjars:swagger-ui:5.25.3") // /swagger-ui.html — openapi.yaml(API.md 계약) 뷰어. springdoc은 Boot 4 미지원이라 정적 서빙
+	implementation("com.google.auth:google-auth-library-oauth2-http:1.30.1") // 스토어앱 FCM(§4-1) 서비스 계정 OAuth2 — 발송 자체는 RestClient
 	testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
 	testImplementation("tools.jackson.dataformat:jackson-dataformat-yaml") // openapi.yaml 문법 검증(ApiDocsEndpointTest)
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")

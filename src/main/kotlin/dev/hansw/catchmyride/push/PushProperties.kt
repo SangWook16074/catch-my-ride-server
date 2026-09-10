@@ -19,6 +19,10 @@ data class PushProperties(
     val templateRemind: String = "",
     /** 내장 표(HolidayCalendar) 밖의 임시공휴일 — 쉼표 구분 "YYYY-MM-DD,..." */
     val extraHolidays: String = "",
+    /** 스토어앱 FCM(API.md §4-1) 서비스 계정 키 JSON 경로 — 비어 있으면 FCM은 dry-run */
+    val fcmServiceAccountPath: String = "",
+    /** FCM HTTP v1 베이스 URL — 테스트에서 가짜 서버로 바꾼다 */
+    val fcmBaseUrl: String = "https://fcm.googleapis.com",
 ) {
     /** 실발송 가능 상태 — 피드백 §3 "발송 이력 있는 날만 접수" 검증도 이 상태에서만 켠다 */
     val live: Boolean get() = keystorePath.isNotBlank()

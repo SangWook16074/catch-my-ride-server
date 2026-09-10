@@ -46,22 +46,55 @@ class PushNotificationSchedulerTest {
     @Autowired lateinit var gbis: GbisBusAdapter
     @Autowired lateinit var subway: SeoulSubwayAdapter
     @Autowired lateinit var spikeProps: SpikeProperties
+    @Autowired lateinit var pushTokens: PushTokenRepository
 
     private val clock = MutableClock()
     private val client = RecordingPushClient()
+
+    // pushTokens 주입 이후에 만들어야 해서 lazy — FcmPushClient의 생성자 의존
+    private val fcmClient by lazy { RecordingFcmClient() }
 
     @BeforeEach
     fun wipe() {
         // 공유 H2에 다른 테스트가 남긴 경로가 tick() 순회에 섞이지 않게 전부 비운다
         jdbc.sql("DELETE FROM commute_route").update()
         jdbc.sql("DELETE FROM push_log").update()
+        jdbc.sql("DELETE FROM push_token").update()
     }
 
     private fun scheduler(arrivals: ArrivalsService = arrivalsService) =
         PushNotificationScheduler(
             routes, pushLog, arrivals, DepartureTimingService(), client,
-            HolidayCalendar(PushProperties()), clock,
+            pushTokens, fcmClient, HolidayCalendar(PushProperties()), clock,
         )
+
+    @Test
+    fun `FCM 토큰이 등록된 유저는 앱인토스 대신 FCM으로 발송한다`() {
+        val userKey = "push-test-fcm"
+        routes.insert(userKey, route("r1", "출근", fixedSetting(activeDays = listOf("TUE"))))
+        pushTokens.upsert(userKey, "fcm-token-1", "IOS")
+
+        clock.set("2026-09-01T08:19:30") // REMIND 구간
+        scheduler().tick()
+
+        assertEquals(0, client.sends.size, "FCM 유저는 앱인토스로 보내지 않는다: ${client.sends}")
+        assertEquals(1, fcmClient.sends.size)
+        assertEquals(PushStage.REMIND, fcmClient.sends[0].stage)
+        // 발송 이력(§3 피드백 검증 근거)은 채널과 무관하게 남는다
+        assertTrue(pushLog.hasAny(userKey, clock.today()))
+    }
+
+    @Test
+    fun `토큰이 없는 유저는 기존 앱인토스 경로로 발송된다`() {
+        val userKey = "push-test-no-fcm"
+        routes.insert(userKey, route("r1", "출근", fixedSetting(activeDays = listOf("TUE"))))
+
+        clock.set("2026-09-01T08:19:30")
+        scheduler().tick()
+
+        assertEquals(1, client.sends.size)
+        assertEquals(0, fcmClient.sends.size)
+    }
 
     @Test
     fun `경로 1회당 PRE·REMIND 각 1회, 총 2회를 넘지 않는다`() {
@@ -267,6 +300,19 @@ class PushNotificationSchedulerTest {
         var arrivals: List<Arrival> = emptyList()
         override fun arrivalsFor(setting: CommuteSetting): ArrivalsResponse =
             ArrivalsResponse(fetchedAt = "", realtimeAvailable = true, walkMinutes = setting.walkMinutes, arrivals = arrivals)
+    }
+
+    private inner class RecordingFcmClient : FcmPushClient(PushProperties(), pushTokens) {
+        val sends = mutableListOf<PushDecision>()
+        override fun send(
+            userKey: String,
+            token: PushToken,
+            decision: PushDecision,
+            notifiedDate: java.time.LocalDate,
+        ): Boolean {
+            sends += decision
+            return false // dry-run과 동일 — delivered=false 기록
+        }
     }
 
     private inner class RecordingPushClient : AppsInTossPushClient(PushProperties()) {

@@ -79,3 +79,11 @@ CREATE TABLE IF NOT EXISTS boarding_feedback (
     submitted_at  TIMESTAMP NOT NULL,
     PRIMARY KEY (user_key, notified_date)
 );
+
+-- 스토어앱(FCM) 푸시 토큰 (API.md §4-1) — 유저당 1개, 재등록은 갱신(멱등). 토큰이 있으면 FCM, 없으면 앱인토스로 발송
+CREATE TABLE IF NOT EXISTS push_token (
+    user_key   VARCHAR(128) PRIMARY KEY,
+    token      VARCHAR(512) NOT NULL,
+    platform   VARCHAR(16) NOT NULL,   -- IOS | ANDROID
+    updated_at TIMESTAMP NOT NULL
+);
