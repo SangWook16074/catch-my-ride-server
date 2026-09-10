@@ -1,5 +1,6 @@
 package dev.hansw.catchmyride.admin
 
+import ch.qos.logback.classic.Level
 import dev.hansw.catchmyride.api.ApiException
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer

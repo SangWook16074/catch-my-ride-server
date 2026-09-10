@@ -28,9 +28,19 @@ class ArrivalsService(
     private val gbis: GbisBusAdapter,
     private val subway: SeoulSubwayAdapter,
     private val props: SpikeProperties,
+    private val clock: java.time.Clock,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
+
+    /**
+     * 정류장 단위 공유 캐시 (2026-09-10 지하철 쿼터 1,000건/일 소진 사고 대응) —
+     * 라이브 뷰 폴링(유저별)과 푸시 스케줄러(경로별)가 같은 정류장을 각자 호출하던 것을
+     * 정류장당 TTL 1회로 합친다. 실패도 짧게 캐시해(네거티브) 장애·쿼터 소진 중 연타를 막는다.
+     */
+    private data class CacheEntry(val at: java.time.Instant, val infos: List<ArrivalInfo>?, val error: String? = null)
+
+    private val cache = java.util.concurrent.ConcurrentHashMap<Pair<StopType, String>, CacheEntry>()
 
     /** routeId 생략 시 첫 경로 — 레거시 클라이언트(§1)와 단일 경로 유저의 기본 동작 */
     fun arrivals(userKey: String, routeId: String? = null): ArrivalsResponse {
@@ -68,10 +78,30 @@ class ArrivalsService(
     }
 
     /** 키가 없어 호출 자체가 불가능한 소스는 null (테스트·키 미발급 환경에서 네트워크를 타지 않게). */
-    private fun fetch(stop: CommuteStop): List<ArrivalInfo>? = when (stop.type) {
-        StopType.SEOUL_BUS -> if (props.keys.dataGoKr.isBlank()) null else topis.fetchArrivals(stop.stopId).arrivals
-        StopType.GYEONGGI_BUS -> if (props.keys.dataGoKr.isBlank()) null else gbis.fetchArrivals(stop.stopId).arrivals
-        StopType.SUBWAY -> if (props.keys.seoulOpenData.isBlank()) null else subway.fetchArrivals(stop.stopId).arrivals
+    private fun fetch(stop: CommuteStop): List<ArrivalInfo>? {
+        val call: () -> List<ArrivalInfo> = when (stop.type) {
+            StopType.SEOUL_BUS ->
+                if (props.keys.dataGoKr.isBlank()) return null else ({ topis.fetchArrivals(stop.stopId).arrivals })
+            StopType.GYEONGGI_BUS ->
+                if (props.keys.dataGoKr.isBlank()) return null else ({ gbis.fetchArrivals(stop.stopId).arrivals })
+            StopType.SUBWAY ->
+                if (props.keys.seoulOpenData.isBlank()) return null else ({ subway.fetchArrivals(stop.stopId).arrivals })
+        }
+        val key = stop.type to stop.stopId
+        val now = clock.instant()
+        cache[key]?.let { entry ->
+            val ttl = if (entry.error == null) SUCCESS_TTL else FAILURE_TTL
+            if (java.time.Duration.between(entry.at, now) < ttl) {
+                entry.error?.let { throw IllegalStateException(it) } // 실패 캐시 — 상류 연타 금지
+                return entry.infos
+            }
+        }
+        return try {
+            call().also { cache[key] = CacheEntry(now, it) }
+        } catch (e: Exception) {
+            cache[key] = CacheEntry(now, null, e.message ?: "도착 정보 조회 실패")
+            throw e
+        }
     }
 
     /**
@@ -114,6 +144,12 @@ class ArrivalsService(
 
     companion object {
         private val SEOUL = ZoneId.of("Asia/Seoul")
+
+        /** 라이브 뷰 폴링 20~30초와 맞물리는 공유 TTL — 유저·스케줄러가 정류장당 이 주기로만 상류를 탄다 */
+        private val SUCCESS_TTL: java.time.Duration = java.time.Duration.ofSeconds(25)
+
+        /** 실패(쿼터 초과·장애) 네거티브 캐시 — 복구 확인은 1분에 한 번이면 충분하다 */
+        private val FAILURE_TTL: java.time.Duration = java.time.Duration.ofSeconds(60)
 
         /** mock.ts statusOf와 동일: 여유 = 도착까지 − 도보. 음수면 놓침, 버퍼 이내면 서두르세요. */
         fun status(secondsToArrival: Int?, walkSeconds: Int, bufferSeconds: Int): ArrivalStatus {

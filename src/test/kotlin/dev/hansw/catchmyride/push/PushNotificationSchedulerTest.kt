@@ -296,7 +296,8 @@ class PushNotificationSchedulerTest {
     )
 
     /** 공공 API 대신 테스트가 도착 목록을 주입한다 — RECOMMENDED 모드 검증용 */
-    private inner class StubArrivalsService : ArrivalsService(routes, topis, gbis, subway, spikeProps) {
+    private inner class StubArrivalsService :
+        ArrivalsService(routes, topis, gbis, subway, spikeProps, Clock.systemUTC()) {
         var arrivals: List<Arrival> = emptyList()
         override fun arrivalsFor(setting: CommuteSetting): ArrivalsResponse =
             ArrivalsResponse(fetchedAt = "", realtimeAvailable = true, walkMinutes = setting.walkMinutes, arrivals = arrivals)

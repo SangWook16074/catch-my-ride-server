@@ -31,6 +31,13 @@ class SeoulSubwayAdapter(
         val body = restClient.get().uri(URI.create(url)).retrieve().body(String::class.java).orEmpty()
 
         val root = objectMapper.readTree(body)
+        // 쿼터 초과(ERROR-337) 등 에러 응답은 realtimeArrivalList가 없어 "빈 목록"으로 보였다 —
+        // 2026-09-10 전면 미표시 사고. 에러는 던져서 realtimeAvailable=false로 정직하게 알린다 (NFR-03).
+        // INFO-200(해당 데이터 없음)은 정상적인 빈 결과라 그대로 통과.
+        val errorCode = root.path("code").asString("")
+        if (errorCode.startsWith("ERROR")) {
+            throw IllegalStateException("서울 지하철 API $errorCode: ${root.path("message").asString("")}".trim())
+        }
         val arrivals = root.path("realtimeArrivalList").asItemList().map { item ->
             val trainStatus = item.textOrNull("btrainSttus")
             ArrivalInfo(
