@@ -86,6 +86,24 @@ class AdminMonitoringController(
         )
     }
 
+    /**
+     * 최근 로그 조회 — LogBuffer(인메모리 링버퍼)를 최신순으로 내려준다.
+     * level=WARN(기본)은 에러 전용 버퍼를 봐서 요청 INFO 로그에 밀려난 에러도 남아 있다.
+     */
+    @GetMapping("/api/admin/logs")
+    fun logs(
+        @RequestHeader(value = "X-Admin-Token", required = false) headerToken: String?,
+        @RequestParam(value = "token", required = false) queryToken: String?,
+        @RequestParam(value = "level", defaultValue = "WARN") level: String,
+        @RequestParam(value = "limit", defaultValue = "200") limit: Int,
+        @RequestParam(value = "q", required = false) q: String?,
+    ): LogsResponse {
+        authorize(headerToken ?: queryToken)
+        val minLevel = Level.toLevel(level.uppercase(), Level.WARN)
+        val entries = LogBuffer.query(minLevel, limit.coerceIn(1, 1000), q?.takeIf { it.isNotBlank() })
+        return LogsResponse(level = minLevel.toString(), count = entries.size, entries = entries)
+    }
+
     private fun authorize(token: String?) {
         if (adminToken.isNotBlank() && token != adminToken) throw ApiException.unauthorized()
     }
@@ -110,6 +128,12 @@ data class MonitoringResponse(
     val heapMaxMb: Long,
     val totalRequests: Long,
     val endpoints: List<EndpointStats>,
+)
+
+data class LogsResponse(
+    val level: String,
+    val count: Int,
+    val entries: List<LogEntry>, // 최신순
 )
 
 data class EndpointStats(

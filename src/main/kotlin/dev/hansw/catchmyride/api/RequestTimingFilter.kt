@@ -18,10 +18,10 @@ class RequestTimingFilter : OncePerRequestFilter() {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** 감시 트래픽 자신은 제외 — compose 헬스체크(30초), 모니터링 대시보드 폴링(10초). */
+    /** 감시 트래픽 자신은 제외 — compose 헬스체크(30초), 모니터링 대시보드 폴링(10초, 로그 조회 포함). */
     override fun shouldNotFilter(request: HttpServletRequest): Boolean =
         request.requestURI.startsWith("/actuator") ||
-            request.requestURI.startsWith("/api/admin/monitoring") ||
+            request.requestURI.startsWith("/api/admin") ||
             request.requestURI == "/monitoring.html"
 
     override fun doFilterInternal(

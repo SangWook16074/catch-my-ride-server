@@ -78,4 +78,13 @@ class AdminMonitoringTokenTest {
         )
         assertEquals(200, byHeader.statusCode(), byHeader.body())
     }
+
+    @Test
+    fun `로그 조회도 같은 토큰 보호가 적용된다`() {
+        val noToken = request(environment, "GET", "/api/admin/logs")
+        assertEquals(401, noToken.statusCode(), noToken.body())
+
+        val ok = request(environment, "GET", "/api/admin/logs?token=test-admin-token")
+        assertEquals(200, ok.statusCode(), ok.body())
+    }
 }

@@ -40,6 +40,23 @@
   .toolbar label { color: #8b93a5; font-size: 13px; display: flex; align-items: center; gap: 5px; }
   #error { color: #f87171; margin: 12px 0; display: none; }
   .muted { color: #8b93a5; font-size: 12px; margin-top: 14px; }
+  h2 { font-size: 15px; margin: 26px 0 10px; }
+  .toolbar select { background: #171a21; border: 1px solid #262b36; border-radius: 8px; color: #e6e9ef;
+                    padding: 7px 10px; }
+  .logbox { background: #12141a; border: 1px solid #262b36; border-radius: 10px; padding: 10px 12px;
+            max-height: 480px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+  .logline { padding: 3px 0; border-bottom: 1px solid #1b1f27; white-space: pre-wrap; word-break: break-all; }
+  .logline:last-child { border-bottom: none; }
+  .logline .time { color: #8b93a5; }
+  .logline .lv { display: inline-block; min-width: 42px; font-weight: 700; }
+  .logline .lv.ERROR { color: #f87171; }
+  .logline .lv.WARN { color: #fbbf24; }
+  .logline .lv.INFO { color: #60a5fa; }
+  .logline .lv.DEBUG, .logline .lv.TRACE { color: #8b93a5; }
+  .logline .lg { color: #8b93a5; }
+  .logline details { margin-top: 3px; }
+  .logline summary { cursor: pointer; color: #f87171; font-size: 11px; }
+  .logline pre { margin: 4px 0 0; color: #d3899a; overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -67,8 +84,20 @@
   <tbody id="rows"><tr><td class="uri" colspan="8">불러오는 중…</td></tr></tbody>
 </table>
 
+<h2>로그 <span class="muted">인메모리 최근분 — WARN/ERROR 500건 별도 보관, 전체 1,000건 (재배포 시 리셋)</span></h2>
+<div class="toolbar">
+  <select id="logLevel">
+    <option value="WARN" selected>WARN 이상 (에러 전용 버퍼)</option>
+    <option value="ERROR">ERROR만</option>
+    <option value="INFO">전체 (요청 로그 포함)</option>
+  </select>
+  <input id="logQuery" type="text" placeholder="검색 — 메시지·로거·스택트레이스">
+  <span class="muted" id="logCount"></span>
+</div>
+<div class="logbox" id="logs">불러오는 중…</div>
+
 <p class="muted">수치는 서버 기동 이후 누적(재배포 시 리셋). p95/p99는 상태코드별 타이머의 최대값(보수적 근사).
-개별 요청 이력은 <code>docker logs app | grep -E "ms$"</code>, 3초 초과는 <code>grep SLOW</code>.</p>
+로그 버퍼 이전의 전체 이력은 <code>docker logs app</code>이 원본 — 3초 초과 요청은 <code>grep SLOW</code>.</p>
 
 <script>
   const $ = id => document.getElementById(id);
@@ -78,6 +107,7 @@
     const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
     return (d ? d + "d " : "") + h + "h " + m + "m";
   }
+  function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   function msClass(ms) { return ms >= 3000 ? "slow" : ms >= 500 ? "warn" : "ok"; }
   function msCell(ms) { return `<td class="${msClass(ms)}">${ms.toLocaleString()}ms</td>`; }
   function statusCell(counts) {
@@ -119,11 +149,39 @@
     }
   }
 
-  $("refresh").addEventListener("click", load);
+  async function loadLogs() {
+    const token = $("token").value.trim();
+    const params = new URLSearchParams({ level: $("logLevel").value, limit: "300" });
+    const q = $("logQuery").value.trim();
+    if (q) params.set("q", q);
+    try {
+      const res = await fetch("/api/admin/logs?" + params, { headers: token ? { "X-Admin-Token": token } : {} });
+      if (!res.ok) throw new Error(res.status === 401 ? "토큰이 올바르지 않습니다 (401)" : "HTTP " + res.status);
+      const data = await res.json();
+      $("logCount").textContent = data.count + "건";
+      $("logs").innerHTML = data.entries.length === 0
+        ? '<div class="logline">해당하는 로그가 없습니다 (서버 기동 이후 인메모리 최근분만 보관)</div>'
+        : data.entries.map(e => `<div class="logline">` +
+            `<span class="time">${new Date(e.timestamp).toLocaleTimeString("ko-KR", { hour12: false })}</span> ` +
+            `<span class="lv ${e.level}">${e.level}</span> ` +
+            `<span class="lg">${esc(e.logger.split(".").pop())}</span> — ${esc(e.message)}` +
+            (e.stacktrace ? `<details><summary>스택트레이스</summary><pre>${esc(e.stacktrace)}</pre></details>` : "") +
+          `</div>`).join("");
+    } catch (e) {
+      $("logs").innerHTML = `<div class="logline">로그 조회 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function loadAll() { load(); loadLogs(); }
+
+  $("refresh").addEventListener("click", loadAll);
   $("showAll").addEventListener("change", load);
-  $("token").addEventListener("keydown", e => { if (e.key === "Enter") load(); });
-  load();
-  setInterval(load, 10_000);
+  $("token").addEventListener("keydown", e => { if (e.key === "Enter") loadAll(); });
+  $("logLevel").addEventListener("change", loadLogs);
+  let logQueryTimer;
+  $("logQuery").addEventListener("input", () => { clearTimeout(logQueryTimer); logQueryTimer = setTimeout(loadLogs, 300); });
+  loadAll();
+  setInterval(loadAll, 10_000);
 </script>
 </body>
 </html>
