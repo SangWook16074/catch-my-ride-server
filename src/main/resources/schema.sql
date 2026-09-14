@@ -87,3 +87,43 @@ CREATE TABLE IF NOT EXISTS push_token (
     platform   VARCHAR(16) NOT NULL,   -- IOS | ANDROID
     updated_at TIMESTAMP NOT NULL
 );
+
+-- §9 하차 알림 — 여정(Journey): 유저가 직접 입력한 구간 리스트 (최대 10개 — 상한은 서버 검증)
+CREATE TABLE IF NOT EXISTS journey (
+    user_key         VARCHAR(128) NOT NULL,
+    journey_id       VARCHAR(36) NOT NULL,
+    label            VARCHAR(32) NOT NULL,
+    repeat_days_json TEXT NOT NULL,          -- ["MON",...] — 요일 반복(FR-702), 자동 시작 아님
+    legs_json        TEXT NOT NULL,          -- JourneyLeg 배열 (v1 SUBWAY만)
+    last_used_at     TIMESTAMP,              -- 트립 시작 시 갱신 — 히스토리 정렬 키
+    created_at       TIMESTAMP NOT NULL,
+    CONSTRAINT journey_pkey PRIMARY KEY (user_key, journey_id)
+);
+
+-- §9 진행 중 트립 — 유저당 동시 1개(user_key UNIQUE). legs는 시작 시점 스냅샷
+CREATE TABLE IF NOT EXISTS trip (
+    trip_id            VARCHAR(36) PRIMARY KEY,
+    user_key           VARCHAR(128) NOT NULL UNIQUE,
+    journey_id         VARCHAR(36) NOT NULL,
+    legs_json          TEXT NOT NULL,
+    leg_index          INT NOT NULL,
+    phase              VARCHAR(16) NOT NULL, -- TRACKING | ARRIVING | TRANSFER | DONE | LOST
+    btrain_no          VARCHAR(16),          -- 특정된 열차 번호 (null = 위치 확인 중)
+    candidates_json    TEXT NOT NULL,        -- 탑승역에서 잡은 후보 열차 번호들
+    remaining_stops    INT,                  -- 이벤트 역까지 남은 정거장 (null = 미확인/LOST)
+    realtime_available BOOLEAN NOT NULL,
+    leg_started_at     TIMESTAMP NOT NULL,   -- 열차 특정 타임아웃 기준
+    last_seen_at       TIMESTAMP,            -- 하차역 목록에서 마지막 목격 — LOST 판정 기준
+    started_at         TIMESTAMP NOT NULL,
+    updated_at         TIMESTAMP NOT NULL
+);
+
+-- FR-704 이벤트(구간 하차)당 최대 2회(PRE·ALIGHT) — PK가 중복 발송을 구조적으로 막는다 (push_log와 동일 설계)
+CREATE TABLE IF NOT EXISTS trip_push_log (
+    trip_id   VARCHAR(36) NOT NULL,
+    leg_index INT NOT NULL,
+    stage     VARCHAR(16) NOT NULL,           -- PRE(2정거장 전 예고) | ALIGHT(직전 역)
+    delivered BOOLEAN NOT NULL,
+    sent_at   TIMESTAMP NOT NULL,
+    CONSTRAINT trip_push_log_pkey PRIMARY KEY (trip_id, leg_index, stage)
+);
