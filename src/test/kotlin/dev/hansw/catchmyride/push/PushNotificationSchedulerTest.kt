@@ -326,6 +326,7 @@ class PushNotificationSchedulerTest {
 
     private fun arrival(seconds: Int) = Arrival(
         stopDisplayName = "여의도역", routeName = "9호선 급행", direction = "상행",
+        directionLabel = null,
         secondsToArrival = seconds, remainingStops = 2, isExpress = true,
         boardable = true, status = ArrivalStatus.RELAXED, rawMessage = null,
     )

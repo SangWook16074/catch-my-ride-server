@@ -182,6 +182,7 @@ class DepartureTimingServiceTest {
         stopDisplayName = "여의도역",
         routeName = route,
         direction = direction,
+        directionLabel = null,
         secondsToArrival = seconds,
         remainingStops = null,
         isExpress = null,
