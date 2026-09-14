@@ -53,12 +53,30 @@ class FcmPushClient(
             )
             return false
         }
-        val body = mapOf(
+        return sendMessage(
+            userKey = userKey,
+            token = token,
+            title = title(decision),
+            body = body(decision),
+            // 알림 탭 → 커스텀 스킴 딥링크 (클라이언트 parsePushEntry 계약)
+            link = "catchmyride://open?from=push&notifiedDate=$notifiedDate",
+        )
+    }
+
+    /**
+     * 임의 문구 발송 — 트립 하차 알림(§9-4) 등 출발 알림 밖의 발송 공용.
+     * 재시도·UNREGISTERED 토큰 폐기 규칙은 출발 알림과 동일하다.
+     */
+    fun sendMessage(userKey: String, token: PushToken, title: String, body: String, link: String): Boolean {
+        if (!live) {
+            log.info("[dry-run] FCM 미발송 — user={} title={}", userKey, title)
+            return false
+        }
+        val payload = mapOf(
             "message" to mapOf(
                 "token" to token.token,
-                "notification" to mapOf("title" to title(decision), "body" to body(decision)),
-                // 알림 탭 → 커스텀 스킴 딥링크 (클라이언트 parsePushEntry 계약)
-                "data" to mapOf("link" to "catchmyride://open?from=push&notifiedDate=$notifiedDate"),
+                "notification" to mapOf("title" to title, "body" to body),
+                "data" to mapOf("link" to link),
                 "apns" to mapOf("payload" to mapOf("aps" to mapOf("sound" to "default"))),
                 "android" to mapOf("priority" to "HIGH"),
             ),
@@ -71,22 +89,22 @@ class FcmPushClient(
                     .uri("/v1/projects/$projectId/messages:send")
                     .header("Authorization", "Bearer ${credentials.accessToken.tokenValue}")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
+                    .body(payload)
                     .retrieve()
                     .toBodilessEntity()
                 return true
             } catch (e: RestClientResponseException) {
                 // 404 NOT_FOUND / errorCode UNREGISTERED = 죽은 토큰 — 폐기하고 미전달로 종료 (§4-1)
                 if (e.statusCode.value() == 404 || e.responseBodyAsString.contains("UNREGISTERED")) {
-                    log.warn("FCM 토큰 폐기(UNREGISTERED) — user={} stage={}", userKey, decision.stage)
+                    log.warn("FCM 토큰 폐기(UNREGISTERED) — user={} title={}", userKey, title)
                     tokens.delete(userKey)
                     return false
                 }
                 lastError = e
-                log.warn("FCM 발송 실패(시도 {}/2) — user={} stage={}: {}", attempt + 1, userKey, decision.stage, e.message)
+                log.warn("FCM 발송 실패(시도 {}/2) — user={} title={}: {}", attempt + 1, userKey, title, e.message)
             } catch (e: Exception) {
                 lastError = e
-                log.warn("FCM 발송 실패(시도 {}/2) — user={} stage={}: {}", attempt + 1, userKey, decision.stage, e.message)
+                log.warn("FCM 발송 실패(시도 {}/2) — user={} title={}: {}", attempt + 1, userKey, title, e.message)
             }
         }
         throw lastError!!

@@ -471,6 +471,65 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /api/v1/journeys:
+    get:
+      tags: [journeys]
+      summary: "§9-1 여정 목록 (lastUsedAt 내림차순 — 히스토리)"
+      responses:
+        "200": { description: "여정 목록 { journeys: [Journey…] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [journeys]
+      summary: "§9-1 여정 생성 (최대 10개, v1 SUBWAY 구간 1~4개)"
+      responses:
+        "201": { description: "생성된 여정" }
+        "400": { description: "11개째·라벨 중복·구간 검증 실패 (INVALID_REQUEST)" }
+  /api/v1/journeys/{journeyId}:
+    put:
+      tags: [journeys]
+      summary: "§9-1 여정 수정"
+      parameters: [{ name: journeyId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "수정된 여정" }
+        "404": { description: "없는 여정 (SETTING_NOT_FOUND)" }
+    delete:
+      tags: [journeys]
+      summary: "§9-1 여정 삭제 — 진행 중 트립도 함께 종료"
+      parameters: [{ name: journeyId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: "삭제 완료" }
+        "404": { description: "없는 여정 (SETTING_NOT_FOUND)" }
+  /api/v1/journeys/{journeyId}/trips:
+    post:
+      tags: [journeys]
+      summary: "§9-2 트립 시작 (유저 수동, 동시 1개)"
+      parameters: [{ name: journeyId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
+        "400": { description: "진행 중 트립 존재 (메시지에 기존 tripId)" }
+  /api/v1/trips/{tripId}:
+    get:
+      tags: [journeys]
+      summary: "§9-3 트립 상태 (클라 15~30초 폴링). TRACKING의 remainingStops null = 위치 확인 중"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "{ phase, legIndex, remainingStops, nextStop, eventStop, realtimeAvailable, fetchedAt }" }
+        "404": { description: "없는 트립 (NOT_FOUND)" }
+    delete:
+      tags: [journeys]
+      summary: "§9-3 트립 종료 (완료·취소 공용, 멱등)"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: "종료" }
+  /api/v1/trips/{tripId}/next-leg:
+    post:
+      tags: [journeys]
+      summary: "§9-3 환승 후 다음 구간 수동 재개 (TRANSFER에서만)"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "재개된 트립 상태" }
+        "400": { description: "TRANSFER가 아님 (INVALID_REQUEST)" }
+
 components:
   securitySchemes:
     tossBearer:

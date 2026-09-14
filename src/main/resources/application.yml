@@ -53,6 +53,14 @@ push:
   # compose는 ./secrets 볼륨(/app/secrets)에 두고 경로를 넘긴다 (mTLS 인증서와 동일 방식)
   fcm-service-account-path: ${FCM_SERVICE_ACCOUNT:}
 
+# §9 하차 알림 — 트립 추적 엔진 (TripTrackingScheduler). 20초마다 진행 중 트립의
+# 하차역 접근 열차를 조회해 상태 전진·푸시 발송. 지하철 키(SEOUL_OPEN_DATA_KEY) 미설정이면
+# 후보·추적이 비어 LOST로 강등될 뿐 서버는 정상 동작한다.
+journey:
+  tracking:
+    enabled: true
+    interval: PT20S
+
 # 네이버클라우드 Maps (API.md §6 지도 미리보기·§7 지오코딩) — 키 미설정이면 두 엔드포인트는 503
 # (클라이언트가 OSM 폴백/안내 문구로 강등). 🧑 NCP 콘솔 > Maps에서 Static Map·Geocoding 이용 신청 후 발급
 ncp:
