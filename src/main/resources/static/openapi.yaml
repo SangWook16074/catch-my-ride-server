@@ -280,6 +280,34 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/stops/directions:
+    get:
+      tags: [stops]
+      summary: 지하철 방면 선택지 조회 (v0.4)
+      description: |
+        온보딩 방면 선택(FR-103 개정)용 — 지하철 전용(버스는 정류장이 곧 방향).
+        key는 상류 updnLine 그대로(상행/하행, 2호선 내선/외선) — CommuteStop.direction에 저장하는 값.
+        label은 실시간 행선지 최빈값("{종착지} 방면") — 실시간이 비거나 장애면 label=key인 폴백 키만 내려간다 (NFR-03).
+        인증 불필요 (§5-1과 동일).
+      parameters:
+        - name: stopId
+          in: query
+          required: true
+          schema: { type: string }
+          example: 수유
+        - name: route
+          in: query
+          required: true
+          schema: { type: string }
+          example: 4호선
+      responses:
+        "200":
+          description: 방면 선택지 (폴백 키 2종은 항상 포함)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StopDirectionsResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+
   /api/v1/map-preview:
     get:
       tags: [map]
@@ -570,6 +598,14 @@ components:
           minItems: 1
           items: { type: string }
           example: ["720", "261"]
+        direction:
+          type: string
+          nullable: true
+          description: |
+            지하철 방면 키(§5-3 directions[].key — 상행/하행, 2호선 내선/외선).
+            저장되면 도착·추천·푸시가 이 방면 열차로만 좁혀진다 (v0.4).
+            null/누락 = 전 방면(구버전 하위호환). 버스는 항상 null
+          example: 상행
     ArrivalsResponse:
       type: object
       required: [fetchedAt, realtimeAvailable, walkMinutes, arrivals]
@@ -593,8 +629,13 @@ components:
         direction:
           type: string
           nullable: true
-          description: 방면 — 지하철 상행/하행 등, 버스는 null
+          description: 방면 키 — 지하철 상행/하행(2호선 내선/외선), 버스는 null. 경로에 방면이 저장돼 있으면 그 방면 열차만 내려간다 (v0.4)
           example: 상행
+        directionLabel:
+          type: string
+          nullable: true
+          description: 열차별 행선지 표기(화면 방면 표시용, v0.4) — 상류 형식이 다르면 null → direction으로 폴백. 버스는 null
+          example: 당고개행
         secondsToArrival:
           type: integer
           nullable: true
@@ -655,3 +696,21 @@ components:
             properties:
               name: { type: string, example: "720" }
               isExpress: { type: boolean, nullable: true }
+    StopDirectionsResponse:
+      type: object
+      required: [directions]
+      properties:
+        directions:
+          type: array
+          items:
+            type: object
+            required: [key, label]
+            properties:
+              key:
+                type: string
+                description: 상류 updnLine 그대로 — CommuteStop.direction에 저장하는 값
+                example: 상행
+              label:
+                type: string
+                description: 사람이 읽는 표기("당고개 방면") — 실시간 행선지가 없으면 key와 동일
+                example: 당고개 방면

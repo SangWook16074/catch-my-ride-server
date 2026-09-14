@@ -57,6 +57,50 @@ class ArrivalsApiTest {
     }
 
     @Test
+    fun `지하철 매칭 - 저장 방면이 있으면 그 방면만, 없으면 전 방면`() {
+        val info = dev.hansw.catchmyride.spike.ArrivalInfo(
+            source = "SEOUL_SUBWAY", stopId = "수유", routeName = "당고개행 - 성신여대입구방면",
+            direction = "상행", directionLabel = "당고개행", predictedSecondsToArrival = 300,
+            remainingStops = null, isExpress = false, rawMessage = null, line = "4호선",
+        )
+        val stop = { direction: String? ->
+            dev.hansw.catchmyride.commute.CommuteStop(
+                type = dev.hansw.catchmyride.stops.StopType.SUBWAY,
+                stopId = "수유", displayName = "수유역", routes = listOf("4호선"), direction = direction,
+            )
+        }
+        // 방면 미저장(구버전 경로) — 전 방면 매칭 (하위호환)
+        assertTrue(ArrivalsService.matches(stop(null), "4호선", info))
+        // 같은 방면만 통과 — 반대 방향 열차로 추천·푸시가 나가지 않는다 (FR-501 개정)
+        assertTrue(ArrivalsService.matches(stop("상행"), "4호선", info))
+        assertEquals(false, ArrivalsService.matches(stop("하행"), "4호선", info))
+    }
+
+    @Test
+    fun `버스 매칭 - 방면 저장값은 무시 (정류장이 곧 방향)`() {
+        val info = dev.hansw.catchmyride.spike.ArrivalInfo(
+            source = "TOPIS", stopId = "19284", routeName = "720", direction = null,
+            predictedSecondsToArrival = 300, remainingStops = 3, isExpress = null, rawMessage = null,
+        )
+        val stop = dev.hansw.catchmyride.commute.CommuteStop(
+            type = dev.hansw.catchmyride.stops.StopType.SEOUL_BUS,
+            stopId = "19284", displayName = "여의도환승센터", routes = listOf("720"), direction = "상행",
+        )
+        assertTrue(ArrivalsService.matches(stop, "720", info))
+    }
+
+    @Test
+    fun `trainLineNm 파싱 - 행선지만 추출, 형식이 다르면 null`() {
+        assertEquals(
+            "당고개행",
+            dev.hansw.catchmyride.spike.adapter.SeoulSubwayAdapter.parseDestination("당고개행 - 성신여대입구방면"),
+        )
+        assertEquals("급행 김포공항행", dev.hansw.catchmyride.spike.adapter.SeoulSubwayAdapter.parseDestination("급행 김포공항행 - 가양방면"))
+        assertEquals(null, dev.hansw.catchmyride.spike.adapter.SeoulSubwayAdapter.parseDestination("이상한형식"))
+        assertEquals(null, dev.hansw.catchmyride.spike.adapter.SeoulSubwayAdapter.parseDestination(null))
+    }
+
+    @Test
     fun `상태 계산 - mock statusOf와 동일`() {
         val walk = 480 // 8분
         val buffer = 180 // 3분

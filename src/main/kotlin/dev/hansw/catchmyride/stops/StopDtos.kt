@@ -20,3 +20,12 @@ data class StopSearchResponse(val results: List<StopSearchResult>)
 data class RouteResult(val name: String, val isExpress: Boolean?)
 
 data class StopRoutesResponse(val routes: List<RouteResult>)
+
+/**
+ * §5-3 지하철 방면 선택지 한 건 (온보딩 방면 선택).
+ * key = 상류 updnLine 그대로("상행"/"하행"/"내선"/"외선") — CommuteStop.direction에 저장하는 값.
+ * label = 사람이 읽는 표기("당고개 방면") — 실시간 행선지가 없으면 key 그대로.
+ */
+data class DirectionResult(val key: String, val label: String)
+
+data class StopDirectionsResponse(val directions: List<DirectionResult>)

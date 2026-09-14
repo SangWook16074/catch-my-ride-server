@@ -77,6 +77,39 @@ class ArrivalsService(
         )
     }
 
+    /**
+     * §5-3 지하철 방면 선택지 (온보딩 방면 선택) — 실시간 도착을 방면 키(updnLine)로 묶어
+     * 행선지 라벨("당고개 방면")을 만든다. 실시간이 비거나 실패하면 호선 기반 폴백 키만 내려간다
+     * (2호선=내선/외선, 그 외=상행/하행). 순간 스냅샷에 한 방면이 빠질 수 있어 폴백 키는 항상 포함한다.
+     */
+    fun subwayDirections(stationName: String, route: String): List<dev.hansw.catchmyride.stops.DirectionResult> {
+        val line = route.removeSuffix(" 급행").removeSuffix(" 일반")
+        val fallbackKeys = if (line == "2호선") listOf("내선", "외선") else listOf("상행", "하행")
+        val infos = try {
+            fetch(CommuteStop(StopType.SUBWAY, stationName, stationName, listOf(route))) ?: emptyList()
+        } catch (e: Exception) {
+            log.warn("방면 조회 실패 — {}({}) 폴백 키만 반환: {}", stationName, route, e.message)
+            emptyList()
+        }
+        // 방면 키별 최빈 행선지 — 단축 운행(노원행 등)이 섞여도 대표 종착지로 라벨링한다
+        val labelByKey = infos
+            .filter { it.line == line && it.direction != null }
+            .groupBy { it.direction!! }
+            .mapValues { (_, trains) ->
+                trains.mapNotNull { it.directionLabel }
+                    .groupingBy { it }.eachCount()
+                    .maxByOrNull { it.value }?.key
+            }
+        val keys = fallbackKeys + labelByKey.keys.filter { it !in fallbackKeys }
+        return keys.map { key ->
+            val destination = labelByKey[key]?.removeSuffix("행")
+            dev.hansw.catchmyride.stops.DirectionResult(
+                key = key,
+                label = destination?.let { "$it 방면" } ?: key,
+            )
+        }
+    }
+
     /** 키가 없어 호출 자체가 불가능한 소스는 null (테스트·키 미발급 환경에서 네트워크를 타지 않게). */
     private fun fetch(stop: CommuteStop): List<ArrivalInfo>? {
         val call: () -> List<ArrivalInfo> = when (stop.type) {
@@ -112,19 +145,8 @@ class ArrivalsService(
      */
     private fun match(stop: CommuteStop, infos: List<ArrivalInfo>, walkSeconds: Int, bufferSeconds: Int): List<Arrival> =
         stop.routes.flatMap { route ->
-            val matched = when (stop.type) {
-                StopType.SUBWAY -> {
-                    val line = route.removeSuffix(" 급행").removeSuffix(" 일반")
-                    val wantExpress = when {
-                        route.endsWith("급행") -> true
-                        route.endsWith("일반") -> false
-                        else -> null // "5호선"처럼 급행 구분 없는 노선 — 전부 매칭
-                    }
-                    infos.filter { it.line == line && (wantExpress == null || it.isExpress == wantExpress) }
-                }
-                else -> infos.filter { it.routeName == route }
-            }
-            matched.map { toArrival(stop.displayName, route, it, walkSeconds, bufferSeconds) }
+            infos.filter { matches(stop, route, it) }
+                .map { toArrival(stop.displayName, route, it, walkSeconds, bufferSeconds) }
         }
 
     private fun toArrival(stopName: String, route: String, info: ArrivalInfo, walkSeconds: Int, bufferSeconds: Int): Arrival {
@@ -133,6 +155,7 @@ class ArrivalsService(
             stopDisplayName = stopName,
             routeName = route,
             direction = info.direction,
+            directionLabel = info.directionLabel,
             secondsToArrival = seconds,
             remainingStops = info.remainingStops,
             isExpress = info.isExpress,
@@ -150,6 +173,27 @@ class ArrivalsService(
 
         /** 실패(쿼터 초과·장애) 네거티브 캐시 — 복구 확인은 1분에 한 번이면 충분하다 */
         private val FAILURE_TTL: java.time.Duration = java.time.Duration.ofSeconds(60)
+
+        /**
+         * 저장된 노선·방면과 실시간 도착 1건의 매칭.
+         * - 지하철: 호선 + 급행 여부 + 방면(FR-501 개정) — 저장 방면(stops[].direction)이 있으면 그 방면만.
+         *   반대 방향 열차로 추천·푸시가 나가는 것을 막는다. null(구버전 경로)은 전 방면 (하위호환)
+         * - 버스: rtNm/routeName 문자열 일치 (정류장이 곧 방향이라 방면 개념 없음)
+         */
+        fun matches(stop: CommuteStop, route: String, info: ArrivalInfo): Boolean = when (stop.type) {
+            StopType.SUBWAY -> {
+                val line = route.removeSuffix(" 급행").removeSuffix(" 일반")
+                val wantExpress = when {
+                    route.endsWith("급행") -> true
+                    route.endsWith("일반") -> false
+                    else -> null // "5호선"처럼 급행 구분 없는 노선 — 전부 매칭
+                }
+                info.line == line &&
+                    (wantExpress == null || info.isExpress == wantExpress) &&
+                    (stop.direction == null || info.direction == stop.direction)
+            }
+            else -> info.routeName == route
+        }
 
         /** mock.ts statusOf와 동일: 여유 = 도착까지 − 도보. 음수면 놓침, 버퍼 이내면 서두르세요. */
         fun status(secondsToArrival: Int?, walkSeconds: Int, bufferSeconds: Int): ArrivalStatus {

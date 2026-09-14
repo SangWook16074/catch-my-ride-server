@@ -100,4 +100,30 @@ class StopsApiTest {
 
         assertEquals(400, response.statusCode())
     }
+
+    // §5-3 방면 선택지 — 키 미설정으로 실시간이 불능이어도 폴백 키는 항상 내려간다 (NFR-03)
+    @Test
+    fun `방면 조회 - 실시간 불능이면 상행·하행 폴백 키`() {
+        val response = get("/api/v1/stops/directions?stopId=%EC%97%AC%EC%9D%98%EB%8F%84&route=9%ED%98%B8%EC%84%A0%20%EA%B8%89%ED%96%89") // 여의도, 9호선 급행
+
+        assertEquals(200, response.statusCode(), response.body())
+        assertTrue(response.body().contains("\"key\":\"상행\""), response.body())
+        assertTrue(response.body().contains("\"key\":\"하행\""), response.body())
+    }
+
+    @Test
+    fun `방면 조회 - 2호선은 내선·외선`() {
+        val response = get("/api/v1/stops/directions?stopId=%EC%8B%A0%EB%8F%84%EB%A6%BC&route=2%ED%98%B8%EC%84%A0") // 신도림, 2호선
+
+        assertEquals(200, response.statusCode(), response.body())
+        assertTrue(response.body().contains("내선"), response.body())
+        assertTrue(response.body().contains("외선"), response.body())
+    }
+
+    @Test
+    fun `방면 조회 - 파라미터 누락은 400`() {
+        val response = get("/api/v1/stops/directions?stopId=%EC%97%AC%EC%9D%98%EB%8F%84&route=")
+
+        assertEquals(400, response.statusCode())
+    }
 }

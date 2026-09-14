@@ -12,7 +12,10 @@ import org.springframework.web.bind.annotation.RestController
  */
 @RestController
 @RequestMapping("/api/v1/stops")
-class StopsController(private val service: StopSearchService) {
+class StopsController(
+    private val service: StopSearchService,
+    private val arrivalsService: dev.hansw.catchmyride.arrivals.ArrivalsService,
+) {
 
     @GetMapping("/search")
     fun search(@RequestParam query: String): StopSearchResponse =
@@ -23,5 +26,14 @@ class StopsController(private val service: StopSearchService) {
         val stopType = runCatching { StopType.valueOf(type) }
             .getOrElse { throw ApiException.invalidRequest("type은 SEOUL_BUS/GYEONGGI_BUS/SUBWAY 중 하나여야 합니다") }
         return StopRoutesResponse(service.routes(stopType, stopId))
+    }
+
+    /** §5-3 지하철 방면 선택지 — 온보딩 방면 선택(FR-103 개정). 지하철 전용, 버스는 정류장이 곧 방향이라 불필요 */
+    @GetMapping("/directions")
+    fun directions(@RequestParam stopId: String, @RequestParam route: String): StopDirectionsResponse {
+        if (stopId.isBlank() || route.isBlank()) {
+            throw ApiException.invalidRequest("stopId와 route가 필요합니다")
+        }
+        return StopDirectionsResponse(arrivalsService.subwayDirections(stopId, route))
     }
 }

@@ -45,6 +45,7 @@ class SeoulSubwayAdapter(
                 stopId = stationName,
                 routeName = item.textOrNull("trainLineNm"),
                 direction = item.textOrNull("updnLine"),
+                directionLabel = parseDestination(item.textOrNull("trainLineNm")),
                 predictedSecondsToArrival = item.textOrNull("barvlDt")?.toIntOrNull()?.takeIf { it > 0 },
                 remainingStops = null,
                 isExpress = trainStatus?.let { it == "급행" || it == "특급" },
@@ -56,6 +57,13 @@ class SeoulSubwayAdapter(
     }
 
     companion object {
+        /**
+         * trainLineNm("당고개행 - 성신여대입구방면")에서 행선지("당고개행")만 뽑는다 — 방면 표시용(FR-501 개정).
+         * 형식이 다르면 null — 아는 척하지 않고 클라이언트가 updnLine으로 폴백한다.
+         */
+        fun parseDestination(trainLineNm: String?): String? =
+            trainLineNm?.substringBefore(" - ")?.trim()?.takeIf { it.endsWith("행") }
+
         /** subwayId → 호선명 — SubwayStationCatalog(data/subway-stations.json)의 노선 표기와 일치시킨다. */
         private val LINE_BY_SUBWAY_ID = mapOf(
             "1001" to "1호선", "1002" to "2호선", "1003" to "3호선", "1004" to "4호선",

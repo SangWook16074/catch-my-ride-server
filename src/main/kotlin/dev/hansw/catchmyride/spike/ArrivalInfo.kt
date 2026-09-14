@@ -9,7 +9,8 @@ data class ArrivalInfo(
     val source: String,                     // TOPIS | GBIS | SEOUL_SUBWAY
     val stopId: String,                     // arsId / stationId / 역명
     val routeName: String?,                 // 예: "720", "방화행 - 마천방면"
-    val direction: String?,                 // 지하철 상행/하행
+    val direction: String?,                 // 지하철 상행/하행(2호선 내선/외선) — 경로 저장 방면과 매칭하는 안정 키
+    val directionLabel: String? = null,     // 열차별 행선지 표기(예: "당고개행") — 화면 표시용, 버스는 null
     val predictedSecondsToArrival: Int?,    // 도착까지 남은 초 (API 제공 시)
     val remainingStops: Int?,               // 남은 정류장 수 (버스)
     val isExpress: Boolean?,                // 급행 여부 (지하철)

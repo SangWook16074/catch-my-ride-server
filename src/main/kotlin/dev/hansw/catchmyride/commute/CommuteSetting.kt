@@ -55,6 +55,9 @@ data class CommuteStop(
     val stopId: String,      // §5 검색 결과의 stopId 그대로 (SEOUL_BUS=arsId / GYEONGGI_BUS=stationId / SUBWAY=역명)
     val displayName: String,
     val routes: List<String>, // §5-2 routes[].name 문자열 그대로 — §2 arrivals의 routeName과 같은 표기
+    // 지하철 방면 키(§5-3 directions[].key = updnLine "상행"/"하행"/"내선"/"외선") — null이면 전 방면(구버전 경로 하위호환).
+    // 버스는 정류장 자체가 방향을 가지므로 항상 null.
+    val direction: String? = null,
 )
 
 data class CommuteWindow(val start: String, val end: String)
