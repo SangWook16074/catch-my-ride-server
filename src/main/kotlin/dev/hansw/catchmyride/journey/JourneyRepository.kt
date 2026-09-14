@@ -42,18 +42,24 @@ class JourneyRepository(
             .param("userKey", userKey)
             .query(Int::class.java).single()
 
-    fun labelExists(userKey: String, label: String, excludeId: String? = null): Boolean =
-        jdbc.sql(
-            """
-            SELECT COUNT(*) FROM journey
-            WHERE user_key = :userKey AND label = :label
-              AND (:excludeId IS NULL OR journey_id <> :excludeId)
-            """.trimIndent(),
-        )
+    // ":param IS NULL" 패턴 금지 — PostgreSQL이 파라미터 타입을 못 정해 500이 난다
+    // (H2 테스트는 통과해 배포에서만 터졌던 2026-09-14 사고). null 여부로 쿼리를 나눈다.
+    fun labelExists(userKey: String, label: String, excludeId: String? = null): Boolean {
+        val spec = if (excludeId == null) {
+            jdbc.sql("SELECT COUNT(*) FROM journey WHERE user_key = :userKey AND label = :label")
+        } else {
+            jdbc.sql(
+                """
+                SELECT COUNT(*) FROM journey
+                WHERE user_key = :userKey AND label = :label AND journey_id <> :excludeId
+                """.trimIndent(),
+            ).param("excludeId", excludeId)
+        }
+        return spec
             .param("userKey", userKey)
             .param("label", label)
-            .param("excludeId", excludeId)
             .query(Int::class.java).single() > 0
+    }
 
     fun insert(userKey: String, journey: Journey, now: LocalDateTime) {
         jdbc.sql(
