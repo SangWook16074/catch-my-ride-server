@@ -2,8 +2,6 @@ package dev.hansw.catchmyride.feedback
 
 import dev.hansw.catchmyride.api.ApiException
 import dev.hansw.catchmyride.api.UserKeyResolver
-import dev.hansw.catchmyride.push.PushLogRepository
-import dev.hansw.catchmyride.push.PushProperties
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
@@ -19,15 +17,14 @@ import java.time.LocalDateTime
 /**
  * API.md §3 — 탑승 피드백 원탭 (FR-601, North Star의 유일한 측정 수단).
  * 같은 notifiedDate 재제출은 마지막 값으로 갱신.
- * "그날 발송 이력이 없으면 400" 검증은 라이브 발송 상태(push.api-key 설정)에서만 켠다 —
- * dry-run 단계에서 막으면 클라이언트 E2E(가짜 ?from=push 진입 테스트)가 전부 400이 되기 때문.
+ * ~~"그날 발송 이력이 없으면 400"~~ → 제거 (오너 결정 2026-09-15): "탔어요"가 하차 알림
+ * 브리지의 진입점이 되면서, 알림이 없던 날의 자발 피드백도 유효한 신호다 —
+ * 알림 여부와 무관하게 기록한다.
  */
 @RestController
 class BoardingFeedbackController(
     private val repository: BoardingFeedbackRepository,
     private val userKeys: UserKeyResolver,
-    private val pushLog: PushLogRepository,
-    private val pushProps: PushProperties,
 ) {
 
     data class Request(val result: String, val notifiedDate: String)
@@ -43,9 +40,6 @@ class BoardingFeedbackController(
         val date = runCatching { LocalDate.parse(request.notifiedDate) }
             .getOrElse { throw ApiException.invalidRequest("notifiedDate는 YYYY-MM-DD 형식이어야 합니다") }
         val userKey = userKeys.resolve(auth)
-        if (pushProps.live && !pushLog.hasAny(userKey, date)) {
-            throw ApiException.invalidRequest("해당 날짜에 발송된 알림이 없습니다")
-        }
         repository.upsert(userKey, date, request.result)
         return Response(recorded = true)
     }
