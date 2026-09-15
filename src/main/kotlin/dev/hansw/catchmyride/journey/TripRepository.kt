@@ -43,9 +43,12 @@ class TripRepository(
             .query { rs, _ -> toTrip(rs) }
             .optional().orElse(null)
 
-    /** 추적 대상 — TRACKING·ARRIVING만 (TRANSFER는 유저 수동 재개 대기, DONE·LOST는 종료 상태) */
+    /**
+     * 추적 대상 — TRACKING·ARRIVING + LOST(재목격 시 TRACKING 복구, §9-3 2026-09-15 실측 개정).
+     * TRANSFER는 유저 수동 재개 대기, DONE만 종료 상태.
+     */
     fun findActive(): List<Trip> =
-        jdbc.sql("SELECT * FROM trip WHERE phase IN ('TRACKING', 'ARRIVING')")
+        jdbc.sql("SELECT * FROM trip WHERE phase IN ('TRACKING', 'ARRIVING', 'LOST')")
             .query { rs, _ -> toTrip(rs) }
             .list()
 

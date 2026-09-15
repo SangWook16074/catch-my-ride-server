@@ -136,6 +136,59 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
+    fun `목격 두절 LOST는 재목격되면 TRACKING으로 복구된다`() {
+        insertTrip()
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)"))
+        scheduler().tick() // 특정 — remaining 4
+
+        // 실시간 피드 두절 3분 초과 — LOST (2026-09-15 실주행에서 반드시 발생)
+        trains["당산"] = emptyList()
+        clock.advance(Duration.ofMinutes(4))
+        scheduler().tick()
+        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+
+        // 재목격 — TRACKING 복구, 남은 정거장도 다시 전진
+        trains["당산"] = listOf(train("9027", message = "[3]번째 전역 (국회의사당)"))
+        scheduler().tick()
+        val recovered = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, recovered.phase)
+        assertEquals(3, recovered.remainingStops)
+    }
+
+    @Test
+    fun `특정 실패 LOST도 후보가 하차역에 나타나면 특정되어 복구된다`() {
+        insertTrip() // 후보 9027 — 아직 하차역 조회 범위 밖
+        trains["당산"] = emptyList()
+        clock.advance(Duration.ofMinutes(16)) // IDENTIFY_TIMEOUT 초과
+        scheduler().tick()
+        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)"))
+        scheduler().tick()
+        val recovered = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, recovered.phase)
+        assertEquals("9027", recovered.btrainNo)
+        assertEquals(4, recovered.remainingStops)
+    }
+
+    @Test
+    fun `복구되지 못한 LOST는 updated_at이 묶여 있어 자동 정리된다`() {
+        insertTrip(candidates = emptyList())
+        trains["당산"] = emptyList()
+        clock.advance(Duration.ofMinutes(16))
+        scheduler().tick() // LOST
+
+        // LOST로 머무는 동안 폴링이 계속 돌아도 updated_at을 갱신하지 않는다
+        clock.advance(Duration.ofHours(3))
+        scheduler().tick()
+        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+
+        clock.advance(Duration.ofHours(4)) // 두절 시점 기준 STALE_AFTER(6시간) 초과
+        scheduler().tick()
+        assertNull(trips.find("trip-1"))
+    }
+
+    @Test
     fun `상류 장애는 LOST가 아니라 실시간 정보 없음이다`() {
         insertTrip()
         trains.failFor("당산")

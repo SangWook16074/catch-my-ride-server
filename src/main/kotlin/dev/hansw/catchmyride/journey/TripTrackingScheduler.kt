@@ -21,6 +21,9 @@ import java.time.LocalDateTime
  *   강제 (FR-704, 2026-09-10 폭주 사고 재발 방지). 도착을 지나쳐 발견한 경우 사후 발송하지 않는다
  * - remaining 0 = 하차역 도착: 마지막 구간이면 DONE, 아니면 TRANSFER(수동 재개 대기, FR-703)
  * - 특정 실패(후보 없음·타임아웃)·목격 두절은 LOST — 조용히 틀리지 않는다 (FR-706, NFR-03)
+ * - LOST는 종착이 아니다 — 재목격·재특정되면 TRACKING으로 복구한다 (2026-09-15 실측: 지하철
+ *   실시간 피드 두절은 흔한데 복구 경로가 없으면 트립이 사실상 죽는다). 단, LOST로 머무는 동안은
+ *   저장하지 않아 updated_at이 두절 시점에 묶인다 — 방치 트립 자동 정리(STALE_AFTER)가 살아있어야 한다
  * - 상류 장애는 LOST가 아니다 — realtimeAvailable=false로 표시하고 상태 유지 (NFR-03)
  * - 폴링은 역 단위 스냅샷 재사용(같은 틱 안 캐시) — 같은 하차역의 트립 N개 = 상류 1회 (NFR-08)
  */
@@ -55,14 +58,18 @@ class TripTrackingScheduler(
     }
 
     private fun process(trip: Trip, now: LocalDateTime, snapshots: MutableMap<String, Result<List<ApproachingTrain>>>) {
+        val wasLost = trip.phase == TripPhase.LOST
         val leg = trip.currentLeg
         val snapshot = snapshots.getOrPut(leg.alightStop) {
             runCatching { trains.approaching(leg.alightStop) }
         }
         val approaching = snapshot.getOrElse { error ->
-            // 상류 장애 — LOST가 아니라 "실시간 정보 없음" (NFR-03)
+            // 상류 장애 — LOST가 아니라 "실시간 정보 없음" (NFR-03).
+            // 이미 LOST면 저장하지 않는다 — updated_at을 두절 시점에 묶어 자동 정리를 살린다
             log.warn("하차역 조회 실패 — station={}: {}", leg.alightStop, error.message)
-            trips.save(trip.copy(realtimeAvailable = false), now)
+            if (!wasLost) {
+                trips.save(trip.copy(realtimeAvailable = false), now)
+            }
             return
         }
         val matching = approaching.filter { it.matchesLine(leg.line) }
@@ -71,6 +78,9 @@ class TripTrackingScheduler(
         if (tracked.btrainNo == null) {
             val found = matching.firstOrNull { it.trainNo in tracked.candidates }
             if (found == null) {
+                if (wasLost) {
+                    return // 특정 실패 LOST — 후보 재등장만 기다린다 (재LOST 판정·저장 없음)
+                }
                 // 아직 하차역 조회 범위에 안 들어옴 — 타임아웃까지 위치 확인 중
                 if (Duration.between(tracked.legStartedAt, now) > IDENTIFY_TIMEOUT) {
                     markLost(tracked, now, "열차 특정 실패(후보=${tracked.candidates.size})")
@@ -79,12 +89,15 @@ class TripTrackingScheduler(
                 trips.save(tracked, now)
                 return
             }
-            tracked = tracked.copy(btrainNo = found.trainNo)
+            tracked = tracked.copy(btrainNo = found.trainNo, phase = TripPhase.TRACKING)
             log.info("열차 특정 — trip={} btrainNo={} leg={}", tracked.tripId, found.trainNo, tracked.legIndex)
         }
 
         val train = matching.firstOrNull { it.trainNo == tracked.btrainNo }
         if (train == null) {
+            if (wasLost) {
+                return // 목격 두절 LOST — 재목격만 기다린다 (재LOST 판정·저장 없음)
+            }
             // 하차역 통과·도착 후엔 목록에서 사라진다 — 직전에 1정거장 이내였다면 도착으로 본다
             if (tracked.remainingStops != null && tracked.remainingStops!! <= 1) {
                 arriveAtEvent(tracked, now)
@@ -105,6 +118,11 @@ class TripTrackingScheduler(
 
         val remaining = train.stationsAway ?: tracked.remainingStops // 모르면 직전 값 유지 (아는 척 금지)
         tracked = tracked.copy(remainingStops = remaining, lastSeenAt = now)
+        if (tracked.phase == TripPhase.LOST) {
+            // 재목격 — LOST 복구 (끊겼다 돌아오면 다시 이어간다, §9-3)
+            tracked = tracked.copy(phase = TripPhase.TRACKING)
+            log.info("트립 LOST 복구 — trip={} btrainNo={} leg={}", tracked.tripId, tracked.btrainNo, tracked.legIndex)
+        }
 
         if (remaining != null) {
             if (remaining in 1..2) {
