@@ -25,7 +25,11 @@ import java.time.LocalDateTime
  *   실시간 피드 두절은 흔한데 복구 경로가 없으면 트립이 사실상 죽는다). 단, LOST로 머무는 동안은
  *   저장하지 않아 updated_at이 두절 시점에 묶인다 — 방치 트립 자동 정리(STALE_AFTER)가 살아있어야 한다
  * - 상류 장애는 LOST가 아니다 — realtimeAvailable=false로 표시하고 상태 유지 (NFR-03)
- * - 폴링은 역 단위 스냅샷 재사용(같은 틱 안 캐시) — 같은 하차역의 트립 N개 = 상류 1회 (NFR-08)
+ * - 폴링은 역·노선 단위 스냅샷 재사용(같은 틱 안 캐시) — 같은 하차역/노선의 트립 N개 = 상류 1회 (NFR-08)
+ * - 노선 전체 위치(realtimePosition)는 보강 피드다 (2026-09-16 출근 실측: 하차역 전광판은 방면당
+ *   1·2번째 열차만 보여줘 특정 전엔 내내 "위치 확인 중", 특정 후에도 뒤차에 밀리면 3분 두절 LOST가 났다):
+ *   특정 전 후보 목격 = 타임아웃 억제 + 단일 후보면 currentStop 제공, 특정 후 목격 = 두절 LOST 방지.
+ *   정거장 카운트·발송 판정은 여전히 전광판 목격만 쓴다 (역 순서 데이터 없이 아는 척 금지, NFR-03)
  */
 @Component
 @ConditionalOnProperty("journey.tracking.enabled", havingValue = "true", matchIfMissing = true)
@@ -44,11 +48,12 @@ class TripTrackingScheduler(
 
     fun tick() {
         val now = LocalDateTime.now(clock)
-        // 같은 틱 안에서 역 스냅샷 재사용 — 같은 하차역을 보는 트립들의 상류 호출을 1회로 (NFR-08)
+        // 같은 틱 안에서 역·노선 스냅샷 재사용 — 같은 하차역/노선을 보는 트립들의 상류 호출을 1회로 (NFR-08)
         val snapshots = mutableMapOf<String, Result<List<ApproachingTrain>>>()
+        val lineSnapshots = mutableMapOf<String, List<LineTrain>>()
         for (trip in trips.findActive()) {
             try {
-                process(trip, now, snapshots)
+                process(trip, now, snapshots, lineSnapshots)
             } catch (e: Exception) {
                 log.warn("트립 추적 실패 — trip={} 건너뜀: {}", trip.tripId, e.message)
             }
@@ -57,7 +62,12 @@ class TripTrackingScheduler(
         trips.deleteStale(now.minus(STALE_AFTER))
     }
 
-    private fun process(trip: Trip, now: LocalDateTime, snapshots: MutableMap<String, Result<List<ApproachingTrain>>>) {
+    private fun process(
+        trip: Trip,
+        now: LocalDateTime,
+        snapshots: MutableMap<String, Result<List<ApproachingTrain>>>,
+        lineSnapshots: MutableMap<String, List<LineTrain>>,
+    ) {
         val wasLost = trip.phase == TripPhase.LOST
         val leg = trip.currentLeg
         val snapshot = snapshots.getOrPut(leg.alightStop) {
@@ -76,13 +86,36 @@ class TripTrackingScheduler(
 
         var tracked = trip.copy(realtimeAvailable = true)
         if (tracked.btrainNo == null) {
-            val found = matching.firstOrNull { it.trainNo in tracked.candidates }
+            val candidateKeys = tracked.candidates.map(::trainNoKey).toSet()
+            val found = matching.firstOrNull { trainNoKey(it.trainNo) in candidateKeys }
             if (found == null) {
+                // 하차역 전광판(방면당 1·2번째 열차만)엔 아직 없음 — 노선 전체 위치로 후보를 계속
+                // 목격한다 (2026-09-16 출근 실측: 전광판만 보면 하차역 근처까지 내내 "위치 확인 중")
+                val sighted = onLine(leg.line, lineSnapshots)
+                    .filter { it.matchesExpress(leg.line) && trainNoKey(it.trainNo) in candidateKeys }
+                if (sighted.isNotEmpty()) {
+                    tracked = tracked.copy(
+                        phase = TripPhase.TRACKING,
+                        lastSeenAt = now,
+                        // 후보가 1대일 때만 위치를 보여준다 — 여러 대면 유저가 탄 열차를 몰라
+                        // 아는 척하지 않는다 (NFR-03). 카운트다운은 여전히 전광판 목격부터
+                        currentStop = if (tracked.candidates.size == 1) {
+                            sighted.first().station ?: tracked.currentStop
+                        } else {
+                            null
+                        },
+                    )
+                    if (wasLost) {
+                        log.info("트립 LOST 복구(노선 목격) — trip={} leg={}", tracked.tripId, tracked.legIndex)
+                    }
+                    trips.save(tracked, now)
+                    return
+                }
                 if (wasLost) {
                     return // 특정 실패 LOST — 후보 재등장만 기다린다 (재LOST 판정·저장 없음)
                 }
-                // 아직 하차역 조회 범위에 안 들어옴 — 타임아웃까지 위치 확인 중
-                if (Duration.between(tracked.legStartedAt, now) > IDENTIFY_TIMEOUT) {
+                // 전광판·노선 어디에도 없음 — 마지막 목격(없으면 구간 시작) 기준 타임아웃까지 위치 확인 중
+                if (Duration.between(tracked.lastSeenAt ?: tracked.legStartedAt, now) > IDENTIFY_TIMEOUT) {
                     markLost(tracked, now, "열차 특정 실패(후보=${tracked.candidates.size})")
                     return
                 }
@@ -93,15 +126,35 @@ class TripTrackingScheduler(
             log.info("열차 특정 — trip={} btrainNo={} leg={}", tracked.tripId, found.trainNo, tracked.legIndex)
         }
 
-        val train = matching.firstOrNull { it.trainNo == tracked.btrainNo }
+        val trackedKey = trainNoKey(tracked.btrainNo!!)
+        val train = matching.firstOrNull { trainNoKey(it.trainNo) == trackedKey }
         if (train == null) {
-            if (wasLost) {
-                return // 목격 두절 LOST — 재목격만 기다린다 (재LOST 판정·저장 없음)
-            }
             // 하차역 통과·도착 후엔 목록에서 사라진다 — 직전에 1정거장 이내였다면 도착으로 본다
+            // (LOST였다면 remainingStops가 비워져 있어 이 판정을 타지 않는다)
             if (tracked.remainingStops != null && tracked.remainingStops!! <= 1) {
                 arriveAtEvent(tracked, now)
                 return
+            }
+            // 뒤차에 밀려 전광판(방면당 2대)에서 빠질 수 있다 — 노선 전체 위치로 계속 목격 (2026-09-16)
+            val onLineTrain = onLine(leg.line, lineSnapshots)
+                .firstOrNull { it.matchesExpress(leg.line) && trainNoKey(it.trainNo) == trackedKey }
+            if (onLineTrain != null) {
+                tracked = tracked.copy(
+                    currentStop = onLineTrain.station ?: tracked.currentStop,
+                    lastSeenAt = now,
+                )
+                if (tracked.phase == TripPhase.LOST) {
+                    tracked = tracked.copy(phase = TripPhase.TRACKING)
+                    log.info(
+                        "트립 LOST 복구(노선 목격) — trip={} btrainNo={} leg={}",
+                        tracked.tripId, tracked.btrainNo, tracked.legIndex,
+                    )
+                }
+                trips.save(tracked, now)
+                return
+            }
+            if (wasLost) {
+                return // 목격 두절 LOST — 재목격만 기다린다 (재LOST 판정·저장 없음)
             }
             val lastSeen = tracked.lastSeenAt
             if (lastSeen != null && Duration.between(lastSeen, now) > LOST_AFTER) {
@@ -117,7 +170,12 @@ class TripTrackingScheduler(
         }
 
         val remaining = train.stationsAway ?: tracked.remainingStops // 모르면 직전 값 유지 (아는 척 금지)
-        tracked = tracked.copy(remainingStops = remaining, lastSeenAt = now)
+        // 현재 위치 역명(arvlMsg3)도 같은 규칙 — 목격 값만 쓰고, 모르면 직전 값 유지 (§9-3 currentStop)
+        tracked = tracked.copy(
+            remainingStops = remaining,
+            currentStop = train.currentStation ?: tracked.currentStop,
+            lastSeenAt = now,
+        )
         if (tracked.phase == TripPhase.LOST) {
             // 재목격 — LOST 복구 (끊겼다 돌아오면 다시 이어간다, §9-3)
             tracked = tracked.copy(phase = TripPhase.TRACKING)
@@ -146,6 +204,12 @@ class TripTrackingScheduler(
         trips.save(tracked, now)
     }
 
+    /** 노선 위치 스냅샷 — 같은 틱 안 노선당 상류 1회 (NFR-08). 보강 피드라 실패는 빈 목록 강등 */
+    private fun onLine(legLine: String, cache: MutableMap<String, List<LineTrain>>): List<LineTrain> =
+        cache.getOrPut(lineBase(legLine)) {
+            runCatching { trains.onLine(lineBase(legLine)) }.getOrElse { emptyList() }
+        }
+
     /** 하차역 도착 — 마지막 구간이면 DONE, 아니면 TRANSFER(다음 구간 수동 재개 대기) */
     private fun arriveAtEvent(trip: Trip, now: LocalDateTime) {
         val phase = if (trip.isLastLeg) TripPhase.DONE else TripPhase.TRANSFER
@@ -155,7 +219,8 @@ class TripTrackingScheduler(
 
     private fun markLost(trip: Trip, now: LocalDateTime, reason: String) {
         log.warn("트립 LOST — trip={} leg={}: {}", trip.tripId, trip.legIndex, reason)
-        trips.save(trip.copy(phase = TripPhase.LOST, remainingStops = null), now)
+        // 위치 정보는 전부 비운다 — 끊긴 채 낡은 역명을 보여주지 않는다 (NFR-03)
+        trips.save(trip.copy(phase = TripPhase.LOST, remainingStops = null, currentStop = null), now)
     }
 
     /**

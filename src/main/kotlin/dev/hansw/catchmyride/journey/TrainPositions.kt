@@ -18,7 +18,21 @@ import java.nio.charset.StandardCharsets
 interface TrainPositions {
     /** 해당 역으로 접근 중인 열차들. 상류 오류는 예외 — 호출부가 강등(FR-706) */
     fun approaching(stationName: String): List<ApproachingTrain>
+
+    /**
+     * 노선 전체를 달리는 열차 위치(realtimePosition) — 하차역 전광판(방면당 1·2번째 열차만)에
+     * 아직/잠시 안 보이는 열차를 계속 목격하기 위한 보강 피드 (2026-09-16 출근 실측 개정).
+     * 미지원 노선·키 미설정·상류 오류는 빈 목록 — 전광판 단독 추적으로 강등, 예외를 던지지 않는다
+     */
+    fun onLine(line: String): List<LineTrain>
 }
+
+/** 노선 전체 위치 스냅샷의 열차 한 대 — 위치 역명만 필요하다 (정거장 카운트는 여전히 전광판 몫) */
+data class LineTrain(
+    val trainNo: String,
+    val station: String?,    // statnNm — 열차가 지금 있는 역명
+    val isExpress: Boolean?, // directAt 1(급행)·7(특급)
+)
 
 data class ApproachingTrain(
     val trainNo: String,
@@ -27,6 +41,7 @@ data class ApproachingTrain(
     val arvlCd: String?,      // 0접근 1도착 2출발 3전역출발 4전역진입 5전역도착 99운행중
     val message: String?,     // arvlMsg2 — "[3]번째 전역 (홍제)" 등
     val secondsToArrival: Int?,
+    val currentStation: String? = null, // arvlMsg3 — 열차 현재 위치 역명 (§9-3 currentStop, 모르면 null)
 ) {
     /**
      * 이 역(하차역)까지 남은 정거장 — arvlCd 우선, 운행중(99)은 메시지의 "N번째 전역" 파싱.
@@ -55,6 +70,32 @@ class SeoulTrainPositions(
 
     private val restClient = RestClient.create()
 
+    override fun onLine(line: String): List<LineTrain> {
+        val key = props.keys.seoulOpenData
+        if (key.isBlank()) {
+            return emptyList() // 키 미설정 — dry 강등 (approaching과 동일 규칙)
+        }
+        val encoded = URLEncoder.encode(POSITION_LINE_NAME[line] ?: line, StandardCharsets.UTF_8)
+        val url = "http://swopenapi.seoul.go.kr/api/subway/$key/json/realtimePosition/0/100/$encoded"
+        val body = try {
+            restClient.get().uri(URI.create(url)).retrieve().body(String::class.java).orEmpty()
+        } catch (e: Exception) {
+            return emptyList() // 보강 피드 — 상류 장애 판정은 전광판(approaching)이 담당한다
+        }
+        val root = objectMapper.readTree(body)
+        if (root.path("code").asString("").startsWith("ERROR")) {
+            return emptyList() // 미지원 노선(신분당선 등 민자)·오류 — 조용히 강등
+        }
+        return root.path("realtimePositionList").asItemList().mapNotNull { item ->
+            val trainNo = item.textOrNull("trainNo") ?: return@mapNotNull null
+            LineTrain(
+                trainNo = trainNo,
+                station = item.textOrNull("statnNm")?.takeIf { it.isNotBlank() },
+                isExpress = item.textOrNull("directAt")?.let { it == "1" || it == "7" },
+            )
+        }
+    }
+
     override fun approaching(stationName: String): List<ApproachingTrain> {
         val key = props.keys.seoulOpenData
         if (key.isBlank()) {
@@ -78,6 +119,7 @@ class SeoulTrainPositions(
                 arvlCd = item.textOrNull("arvlCd"),
                 message = item.textOrNull("arvlMsg2"),
                 secondsToArrival = item.textOrNull("barvlDt")?.toIntOrNull()?.takeIf { it > 0 },
+                currentStation = item.textOrNull("arvlMsg3")?.takeIf { it.isNotBlank() },
             )
         }
     }
@@ -91,13 +133,27 @@ class SeoulTrainPositions(
             "1067" to "경춘선", "1075" to "수인분당선", "1077" to "신분당선", "1081" to "경강선",
             "1092" to "우이신설경전철", "1093" to "서해선", "1094" to "신림선",
         )
+
+        /** 카탈로그 노선 표기 → realtimePosition 호선명 (표기가 다른 노선만) */
+        private val POSITION_LINE_NAME = mapOf(
+            "경의선" to "경의중앙선",
+            "우이신설경전철" to "우이신설선",
+        )
     }
 }
 
+/** 구간 노선("9호선 급행")의 호선 부분 — 전광판·노선 위치 조회 키 공용 */
+fun lineBase(legLine: String): String = legLine.removeSuffix(" 급행").removeSuffix(" 일반")
+
+/**
+ * 상류 두 피드의 열차 번호 표기 차이(선행 0 등)를 흡수한 비교 키 —
+ * 전광판 btrainNo와 노선 위치 trainNo가 같은 열차인지 볼 때 항상 이걸로 비교한다
+ */
+fun trainNoKey(trainNo: String): String = trainNo.trim().trimStart('0').ifEmpty { "0" }
+
 /** 구간 노선("9호선 급행")과 열차의 노선·급행 여부 매칭 — ArrivalsService와 같은 규칙 */
 fun ApproachingTrain.matchesLine(legLine: String): Boolean {
-    val base = legLine.removeSuffix(" 급행").removeSuffix(" 일반")
-    if (line != base) {
+    if (line != lineBase(legLine)) {
         return false
     }
     return when {
@@ -105,4 +161,11 @@ fun ApproachingTrain.matchesLine(legLine: String): Boolean {
         legLine.endsWith("일반") -> isExpress != true
         else -> true
     }
+}
+
+/** 노선 위치 열차의 급행 여부 매칭 — 노선 자체는 조회 키로 이미 고정돼 있다 */
+fun LineTrain.matchesExpress(legLine: String): Boolean = when {
+    legLine.endsWith("급행") -> isExpress == true
+    legLine.endsWith("일반") -> isExpress != true
+    else -> true
 }

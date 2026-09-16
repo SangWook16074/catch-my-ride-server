@@ -63,27 +63,29 @@ class TripTrackingSchedulerTest {
         return trip
     }
 
-    private fun train(no: String, arvlCd: String? = "99", message: String? = null, express: Boolean = true) =
-        ApproachingTrain(no, line = "9호선", isExpress = express, arvlCd = arvlCd, message = message, secondsToArrival = null)
+    private fun train(no: String, arvlCd: String? = "99", message: String? = null, express: Boolean = true, at: String? = null) =
+        ApproachingTrain(no, line = "9호선", isExpress = express, arvlCd = arvlCd, message = message, secondsToArrival = null, currentStation = at)
 
     @Test
     fun `후보 열차가 하차역에 나타나면 특정되고 남은 정거장이 전진한다`() {
         insertTrip()
         pushTokens.upsert("dev-user", "fcm-token", "IOS")
 
-        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)"))
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)", at = "선유도"))
         scheduler().tick()
         var saved = trips.find("trip-1")!!
         assertEquals("9027", saved.btrainNo)
         assertEquals(4, saved.remainingStops)
+        assertEquals("선유도", saved.currentStop) // 현재 위치 역명(arvlMsg3) 노출 (§9-3 currentStop)
         assertEquals(TripPhase.TRACKING, saved.phase)
         assertTrue(fcm.sent.isEmpty()) // 아직 예고 구간 아님
 
         // 2정거장 전 — PRE 1회 (FR-704 ①)
-        trains["당산"] = listOf(train("9027", message = "[2]번째 전역 (국회의사당)"))
+        trains["당산"] = listOf(train("9027", message = "[2]번째 전역 (국회의사당)", at = "국회의사당"))
         scheduler().tick()
         saved = trips.find("trip-1")!!
         assertEquals(2, saved.remainingStops)
+        assertEquals("국회의사당", saved.currentStop)
         assertEquals(listOf("PRE"), fcm.sent.map { it.first })
 
         // 같은 상태 반복 폴링 — 재발송 없음
@@ -138,21 +140,24 @@ class TripTrackingSchedulerTest {
     @Test
     fun `목격 두절 LOST는 재목격되면 TRACKING으로 복구된다`() {
         insertTrip()
-        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)"))
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)", at = "선유도"))
         scheduler().tick() // 특정 — remaining 4
 
         // 실시간 피드 두절 3분 초과 — LOST (2026-09-15 실주행에서 반드시 발생)
         trains["당산"] = emptyList()
         clock.advance(Duration.ofMinutes(4))
         scheduler().tick()
-        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+        val lost = trips.find("trip-1")!!
+        assertEquals(TripPhase.LOST, lost.phase)
+        assertNull(lost.currentStop) // 끊긴 채 낡은 역명을 남기지 않는다 (NFR-03)
 
         // 재목격 — TRACKING 복구, 남은 정거장도 다시 전진
-        trains["당산"] = listOf(train("9027", message = "[3]번째 전역 (국회의사당)"))
+        trains["당산"] = listOf(train("9027", message = "[3]번째 전역 (국회의사당)", at = "국회의사당"))
         scheduler().tick()
         val recovered = trips.find("trip-1")!!
         assertEquals(TripPhase.TRACKING, recovered.phase)
         assertEquals(3, recovered.remainingStops)
+        assertEquals("국회의사당", recovered.currentStop)
     }
 
     @Test
@@ -188,6 +193,64 @@ class TripTrackingSchedulerTest {
         assertNull(trips.find("trip-1"))
     }
 
+    // ---- 노선 전체 위치(realtimePosition) 보강 — 2026-09-16 출근 실측 개정 ----
+
+    @Test
+    fun `특정 전에도 단일 후보는 노선 위치로 현재 역을 보여준다`() {
+        insertTrip() // 후보 9027 하나 — "탔어요" 직후의 흔한 상태
+        trains["당산"] = emptyList() // 하차역 전광판(방면당 1·2번째)엔 아직 없음
+        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true)))
+        scheduler().tick()
+        val saved = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, saved.phase)
+        assertNull(saved.btrainNo) // 특정(방향 자기선택)은 여전히 하차역 목격으로만
+        assertNull(saved.remainingStops) // 카운트다운도 전광판 목격부터 — 아는 척 금지 (NFR-03)
+        assertEquals("샛강", saved.currentStop)
+    }
+
+    @Test
+    fun `후보가 여럿이면 노선 목격만 하고 위치는 보여주지 않는다`() {
+        insertTrip(candidates = listOf("9027", "9028"))
+        trains["당산"] = emptyList()
+        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true)))
+        scheduler().tick()
+        val saved = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, saved.phase)
+        assertNull(saved.currentStop) // 유저가 탄 열차를 모른다 (NFR-03)
+    }
+
+    @Test
+    fun `노선에서 후보가 목격되는 동안은 특정 타임아웃으로 LOST되지 않는다`() {
+        insertTrip()
+        trains["당산"] = emptyList()
+        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true)))
+        clock.advance(Duration.ofMinutes(16)) // IDENTIFY_TIMEOUT은 지났지만 열차가 달리는 게 보인다
+        scheduler().tick()
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
+
+        trains.line("9호선", emptyList()) // 노선에서도 사라짐 — 마지막 목격 기준으로 타임아웃
+        clock.advance(Duration.ofMinutes(16))
+        scheduler().tick()
+        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+    }
+
+    @Test
+    fun `특정 후 전광판에서 밀려나도 노선 목격이 있으면 LOST가 아니다`() {
+        insertTrip()
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)", at = "선유도"))
+        scheduler().tick() // 특정 — remaining 4
+
+        // 뒤차에 밀려 전광판(방면당 2대)에서 빠짐 — 노선 전체 위치에는 계속 보인다
+        trains["당산"] = emptyList()
+        trains.line("9호선", listOf(LineTrain("9027", "국회의사당", isExpress = true)))
+        clock.advance(Duration.ofMinutes(4)) // LOST_AFTER(3분) 초과여도
+        scheduler().tick()
+        val saved = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, saved.phase)
+        assertEquals("국회의사당", saved.currentStop) // 위치는 노선 피드로 계속 갱신
+        assertEquals(4, saved.remainingStops) // 카운트는 마지막 전광판 값 유지
+    }
+
     @Test
     fun `상류 장애는 LOST가 아니라 실시간 정보 없음이다`() {
         insertTrip()
@@ -220,16 +283,21 @@ private class MutableClock(var now: Instant = Instant.parse("2026-09-14T08:00:00
 
 private class FakeTrains : TrainPositions {
     private val byStation = mutableMapOf<String, List<ApproachingTrain>>()
+    private val byLine = mutableMapOf<String, List<LineTrain>>()
     private val failing = mutableSetOf<String>()
 
     operator fun set(station: String, value: List<ApproachingTrain>) {
         byStation[station] = value
+    }
+    fun line(line: String, value: List<LineTrain>) {
+        byLine[line] = value
     }
     fun failFor(station: String) {
         failing.add(station)
     }
     fun reset() {
         byStation.clear()
+        byLine.clear()
         failing.clear()
     }
     override fun approaching(stationName: String): List<ApproachingTrain> {
@@ -238,6 +306,7 @@ private class FakeTrains : TrainPositions {
         }
         return byStation[stationName].orEmpty()
     }
+    override fun onLine(line: String): List<LineTrain> = byLine[line].orEmpty()
 }
 
 /** stage → body 기록 — live=false라 원본 send는 dry-run이지만, 여기선 발송 자체를 가로챈다 */
