@@ -283,8 +283,12 @@ class TripTrackingScheduler(
     }
 
     companion object {
-        /** 열차 특정 제한 — 탑승 후 이 시간 안에 하차역 조회 범위에 들어와야 한다 */
-        private val IDENTIFY_TIMEOUT: Duration = Duration.ofMinutes(15)
+        /**
+         * 특정 전 무목격 제한 — 마지막 목격(없으면 구간 시작) 후 이 시간 안에 전광판·노선
+         * 어디서든 열차가 보여야 한다. 후보 재수집·LOST 복구 루프가 있어 LOST는 종착이
+         * 아니므로 짧게 실패를 알리는 쪽을 택했다 (오너 결정 2026-09-16: 15분 → 1분)
+         */
+        private val IDENTIFY_TIMEOUT: Duration = Duration.ofMinutes(1)
 
         /** 특정된 열차가 목록에서 사라진 채 이 시간이 지나면 LOST (순간 누락은 허용) */
         private val LOST_AFTER: Duration = Duration.ofMinutes(3)
