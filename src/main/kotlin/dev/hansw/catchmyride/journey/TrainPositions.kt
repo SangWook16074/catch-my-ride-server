@@ -145,6 +145,20 @@ class SeoulTrainPositions(
 /** 구간 노선("9호선 급행")의 호선 부분 — 전광판·노선 위치 조회 키 공용 */
 fun lineBase(legLine: String): String = legLine.removeSuffix(" 급행").removeSuffix(" 일반")
 
+/** 유저가 "시작"을 누르는 시점 = 탑승 직후 — 도착 임박·직전 도착 열차만 후보로 본다 */
+private const val BOARD_WINDOW_SECONDS = 120
+
+/**
+ * 탑승역 전광판에서 탑승 후보 열차 번호 추출 — 지금 도착·출발 중이거나 곧 도착할 열차.
+ * 트립 시작(TripController)과 특정 전 재수집(TripTrackingScheduler)이 같은 규칙을 쓴다
+ */
+fun boardingCandidates(approaching: List<ApproachingTrain>, legLine: String): List<String> =
+    approaching
+        .filter { it.matchesLine(legLine) }
+        .filter { (it.stationsAway ?: Int.MAX_VALUE) == 0 || (it.secondsToArrival ?: Int.MAX_VALUE) <= BOARD_WINDOW_SECONDS }
+        .map { it.trainNo }
+        .distinct()
+
 /**
  * 상류 두 피드의 열차 번호 표기 차이(선행 0 등)를 흡수한 비교 키 —
  * 전광판 btrainNo와 노선 위치 trainNo가 같은 열차인지 볼 때 항상 이걸로 비교한다

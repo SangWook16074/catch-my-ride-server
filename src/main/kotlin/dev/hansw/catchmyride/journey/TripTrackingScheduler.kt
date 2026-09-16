@@ -16,7 +16,8 @@ import java.time.LocalDateTime
  * 불변 조건 (테스트가 명세):
  * - 열차 특정: 탑승역 후보(btrainNo) 중 하나가 하차역 목록에 나타나면 그 열차로 확정 —
  *   방향은 자기선택된다(탑승역에 있던 열차가 하차역에 접근 = 올바른 방향). 특정 전엔
- *   remainingStops null(위치 확인 중, API.md §9-3)
+ *   remainingStops null(위치 확인 중, API.md §9-3). 후보가 비어 있으면 특정 전까지 탑승역
+ *   전광판에서 재수집한다 (2026-09-16 저녁 실측: 시작 순간 전광판 공백 = 트립이 영영 죽었다)
  * - 발송은 이벤트(구간 하차)당 최대 2회: PRE(2정거장 전)·ALIGHT(직전 역) — trip_push_log PK로
  *   강제 (FR-704, 2026-09-10 폭주 사고 재발 방지). 도착을 지나쳐 발견한 경우 사후 발송하지 않는다
  * - remaining 0 = 하차역 도착: 마지막 구간이면 DONE, 아니면 TRANSFER(수동 재개 대기, FR-703)
@@ -86,6 +87,18 @@ class TripTrackingScheduler(
 
         var tracked = trip.copy(realtimeAvailable = true)
         if (tracked.btrainNo == null) {
+            if (tracked.candidates.isEmpty()) {
+                // 시작 순간 탑승역 전광판이 비어 있던 트립(2026-09-16 저녁 실측: 후보 0개 →
+                // 영영 특정 불가·15분 LOST) — 특정 전까지 탑승역을 계속 봐서 처음 나타나는
+                // 열차를 후보로 잡는다. 플랫폼에서 "미리 시작"하는 실사용 패턴도 흡수된다
+                val seeded = snapshots.getOrPut(leg.boardStop) {
+                    runCatching { trains.approaching(leg.boardStop) }
+                }.getOrNull()?.let { boardingCandidates(it, leg.line) }.orEmpty()
+                if (seeded.isNotEmpty()) {
+                    tracked = tracked.copy(candidates = seeded)
+                    log.info("후보 지연 수집 — trip={} 후보={}대", tracked.tripId, seeded.size)
+                }
+            }
             val candidateKeys = tracked.candidates.map(::trainNoKey).toSet()
             val found = matching.firstOrNull { trainNoKey(it.trainNo) in candidateKeys }
             if (found == null) {

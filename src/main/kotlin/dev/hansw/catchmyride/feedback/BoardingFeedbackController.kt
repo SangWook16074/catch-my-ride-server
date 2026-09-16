@@ -6,9 +6,11 @@ import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import java.time.LocalDate
@@ -44,10 +46,33 @@ class BoardingFeedbackController(
         return Response(recorded = true)
     }
 
+    data class HistoryEntry(val date: String, val result: String)
+    data class HistoryResponse(val entries: List<HistoryEntry>)
+
+    /**
+     * API.md §3-2 — 통근 리포트("나의 통근")용 이력 (명세서 §9 2026-09-16).
+     * 서버는 이력만 반환한다 — 성공률·스트릭 집계는 클라이언트 몫 (§3-1과 같은 태도).
+     */
+    @GetMapping("/api/v1/boarding-feedback/history")
+    fun history(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @RequestParam(value = "limit", required = false) limit: Int?,
+    ): HistoryResponse {
+        val userKey = userKeys.resolve(auth)
+        val capped = (limit ?: HISTORY_DEFAULT_LIMIT).coerceIn(1, HISTORY_MAX_LIMIT)
+        return HistoryResponse(
+            repository.history(userKey, capped).map { HistoryEntry(it.date.toString(), it.result) },
+        )
+    }
+
     companion object {
         private val RESULTS = setOf("BOARDED", "MISSED")
+        const val HISTORY_DEFAULT_LIMIT = 60
+        const val HISTORY_MAX_LIMIT = 366
     }
 }
+
+data class FeedbackHistoryRow(val date: LocalDate, val result: String)
 
 @Repository
 class BoardingFeedbackRepository(private val jdbc: JdbcClient) {
@@ -62,6 +87,20 @@ class BoardingFeedbackRepository(private val jdbc: JdbcClient) {
         )
             .param("userKey", userKey).param("limit", limit)
             .query { rs, _ -> rs.getString("result") }
+            .list()
+
+    /** §3-2 통근 리포트용 — 최근 알림일 순 (날짜, 결과) 이력 */
+    fun history(userKey: String, limit: Int): List<FeedbackHistoryRow> =
+        jdbc.sql(
+            """
+            SELECT notified_date, result FROM boarding_feedback
+            WHERE user_key = :userKey ORDER BY notified_date DESC LIMIT :limit
+            """.trimIndent(),
+        )
+            .param("userKey", userKey).param("limit", limit)
+            .query { rs, _ ->
+                FeedbackHistoryRow(rs.getDate("notified_date").toLocalDate(), rs.getString("result"))
+            }
             .list()
 
     /** S-5 반복 발송 중단용 — 그날 "탔어요"가 접수됐는가 (이미 탄 유저에게 다음 차 안내는 소음) */

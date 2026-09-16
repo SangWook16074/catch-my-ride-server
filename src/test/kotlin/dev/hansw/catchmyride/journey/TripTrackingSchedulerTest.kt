@@ -193,6 +193,28 @@ class TripTrackingSchedulerTest {
         assertNull(trips.find("trip-1"))
     }
 
+    @Test
+    fun `시작 때 후보가 없어도 탑승역에 열차가 나타나면 후보로 잡아 특정한다`() {
+        // 2026-09-16 저녁 실측: 시작 순간 전광판 공백 → 후보 0개 스냅샷 고정 → 영영 특정 불가·15분 LOST
+        insertTrip(candidates = emptyList())
+        trains["당산"] = emptyList()
+        scheduler().tick() // 아직 아무 열차도 없음 — 위치 확인 중 유지
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
+
+        // 탑승역에 열차 도착 — 특정 전 재수집으로 후보에 들어간다
+        trains["여의도"] = listOf(train("9027", arvlCd = "1"))
+        scheduler().tick()
+
+        // 그 열차가 하차역 전광판에 나타나면 특정·카운트다운 시작
+        trains["여의도"] = emptyList()
+        trains["당산"] = listOf(train("9027", message = "[2]번째 전역 (국회의사당)", at = "국회의사당"))
+        scheduler().tick()
+        val saved = trips.find("trip-1")!!
+        assertEquals("9027", saved.btrainNo)
+        assertEquals(2, saved.remainingStops)
+        assertEquals("국회의사당", saved.currentStop)
+    }
+
     // ---- 노선 전체 위치(realtimePosition) 보강 — 2026-09-16 출근 실측 개정 ----
 
     @Test

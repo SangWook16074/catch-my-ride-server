@@ -153,14 +153,11 @@ class TripController(
 
     /**
      * 탑승역에서 지금 도착·출발 중인 열차 후보 — 하차역 목록에 이 중 하나가 나타나면
-     * 그 열차가 우리 열차다(방향 자기선택). 상류 실패는 빈 후보 — 특정 실패 시 LOST (FR-706)
+     * 그 열차가 우리 열차다(방향 자기선택). 상류 실패·빈 전광판이면 빈 후보 —
+     * 특정 전까지 추적 엔진이 탑승역을 계속 봐서 재수집한다 (2026-09-16 저녁 실측 개정)
      */
     private fun identifyCandidates(leg: JourneyLeg): List<String> = try {
-        trains.approaching(leg.boardStop)
-            .filter { it.matchesLine(leg.line) }
-            .filter { (it.stationsAway ?: Int.MAX_VALUE) == 0 || (it.secondsToArrival ?: Int.MAX_VALUE) <= BOARD_WINDOW_SECONDS }
-            .map { it.trainNo }
-            .distinct()
+        boardingCandidates(trains.approaching(leg.boardStop), leg.line)
     } catch (e: Exception) {
         log.warn("탑승 후보 열차 조회 실패 — board={}: {}", leg.boardStop, e.message)
         emptyList()
@@ -168,8 +165,5 @@ class TripController(
 
     companion object {
         private val ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME
-
-        /** 유저가 "시작"을 누르는 시점 = 탑승 직후 — 도착 임박·직전 도착 열차만 후보로 본다 */
-        private const val BOARD_WINDOW_SECONDS = 120
     }
 }
