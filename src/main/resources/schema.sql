@@ -111,12 +111,16 @@ CREATE TABLE IF NOT EXISTS trip (
     btrain_no          VARCHAR(16),          -- 특정된 열차 번호 (null = 위치 확인 중)
     candidates_json    TEXT NOT NULL,        -- 탑승역에서 잡은 후보 열차 번호들
     remaining_stops    INT,                  -- 이벤트 역까지 남은 정거장 (null = 미확인/LOST)
+    current_stop       VARCHAR(64),          -- 열차 현재 위치 역명(상류 arvlMsg3, null = 모름) — §9-3 currentStop
     realtime_available BOOLEAN NOT NULL,
     leg_started_at     TIMESTAMP NOT NULL,   -- 열차 특정 타임아웃 기준
     last_seen_at       TIMESTAMP,            -- 하차역 목록에서 마지막 목격 — LOST 판정 기준
     started_at         TIMESTAMP NOT NULL,
     updated_at         TIMESTAMP NOT NULL
 );
+
+-- 2026-09-15 마이그레이션 — 기존 배포 DB에 현재 위치 역명 컬럼 추가 (§9-3 currentStop)
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS current_stop VARCHAR(64);
 
 -- FR-704 이벤트(구간 하차)당 최대 2회(PRE·ALIGHT) — PK가 중복 발송을 구조적으로 막는다 (push_log와 동일 설계)
 CREATE TABLE IF NOT EXISTS trip_push_log (

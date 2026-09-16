@@ -36,7 +36,7 @@ class TripController(
         val phase: String,
         val legIndex: Int,
         val remainingStops: Int?,
-        val nextStop: String?,
+        val currentStop: String?,
         val eventStop: String,
         val realtimeAvailable: Boolean,
         val fetchedAt: String,
@@ -85,7 +85,7 @@ class TripController(
             phase = trip.phase.name,
             legIndex = trip.legIndex,
             remainingStops = trip.remainingStops,
-            nextStop = null, // v1 미제공 — 열차 현재 위치 역명은 실측 후 (API.md §9-3)
+            currentStop = trip.currentStop, // 열차 현재 위치 역명(상류 arvlMsg3) — 모르면 null (API.md §9-3)
             eventStop = trip.currentLeg.alightStop,
             realtimeAvailable = trip.realtimeAvailable,
             fetchedAt = LocalDateTime.now(clock).format(ISO),
@@ -111,6 +111,7 @@ class TripController(
             btrainNo = null,
             candidates = identifyCandidates(nextLeg),
             remainingStops = null,
+            currentStop = null, // 새 구간 — 이전 구간의 위치 역명을 이월하지 않는다
             realtimeAvailable = true,
             legStartedAt = now,
             lastSeenAt = null,
@@ -120,7 +121,7 @@ class TripController(
             phase = resumed.phase.name,
             legIndex = resumed.legIndex,
             remainingStops = null,
-            nextStop = null,
+            currentStop = null,
             eventStop = nextLeg.alightStop,
             realtimeAvailable = true,
             fetchedAt = now.format(ISO),

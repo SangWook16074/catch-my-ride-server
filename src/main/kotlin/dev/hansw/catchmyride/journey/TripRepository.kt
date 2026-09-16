@@ -16,6 +16,8 @@ data class Trip(
     val btrainNo: String?,
     val candidates: List<String>,
     val remainingStops: Int?,
+    /** 열차 현재 위치 역명(상류 arvlMsg3) — 특정 후 목격 값, 모르면 null (§9-3 currentStop) */
+    val currentStop: String? = null,
     val realtimeAvailable: Boolean,
     val legStartedAt: LocalDateTime,
     val lastSeenAt: LocalDateTime?,
@@ -56,10 +58,10 @@ class TripRepository(
         jdbc.sql(
             """
             INSERT INTO trip (trip_id, user_key, journey_id, legs_json, leg_index, phase, btrain_no,
-                              candidates_json, remaining_stops, realtime_available, leg_started_at,
-                              last_seen_at, started_at, updated_at)
+                              candidates_json, remaining_stops, current_stop, realtime_available,
+                              leg_started_at, last_seen_at, started_at, updated_at)
             VALUES (:tripId, :userKey, :journeyId, :legs, :legIndex, :phase, :btrainNo,
-                    :candidates, :remaining, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
+                    :candidates, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
             """.trimIndent(),
         )
             .param("tripId", trip.tripId)
@@ -71,6 +73,7 @@ class TripRepository(
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
             .param("remaining", trip.remainingStops)
+            .param("currentStop", trip.currentStop)
             .param("realtime", trip.realtimeAvailable)
             .param("legStartedAt", trip.legStartedAt)
             .param("lastSeenAt", trip.lastSeenAt)
@@ -84,8 +87,8 @@ class TripRepository(
             """
             UPDATE trip SET leg_index = :legIndex, phase = :phase, btrain_no = :btrainNo,
                             candidates_json = :candidates, remaining_stops = :remaining,
-                            realtime_available = :realtime, leg_started_at = :legStartedAt,
-                            last_seen_at = :lastSeenAt, updated_at = :now
+                            current_stop = :currentStop, realtime_available = :realtime,
+                            leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt, updated_at = :now
             WHERE trip_id = :tripId
             """.trimIndent(),
         )
@@ -95,6 +98,7 @@ class TripRepository(
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
             .param("remaining", trip.remainingStops)
+            .param("currentStop", trip.currentStop)
             .param("realtime", trip.realtimeAvailable)
             .param("legStartedAt", trip.legStartedAt)
             .param("lastSeenAt", trip.lastSeenAt)
@@ -166,6 +170,7 @@ class TripRepository(
         btrainNo = rs.getString("btrain_no"),
         candidates = objectMapper.readValue(rs.getString("candidates_json"), Array<String>::class.java).toList(),
         remainingStops = rs.getObject("remaining_stops")?.let { (it as Number).toInt() },
+        currentStop = rs.getString("current_stop"),
         realtimeAvailable = rs.getBoolean("realtime_available"),
         legStartedAt = rs.getTimestamp("leg_started_at").toLocalDateTime(),
         lastSeenAt = rs.getTimestamp("last_seen_at")?.toLocalDateTime(),

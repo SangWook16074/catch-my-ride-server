@@ -513,7 +513,7 @@ paths:
       summary: "§9-3 트립 상태 (클라 15~30초 폴링). TRACKING의 remainingStops null = 위치 확인 중"
       parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
       responses:
-        "200": { description: "{ phase, legIndex, remainingStops, nextStop, eventStop, realtimeAvailable, fetchedAt }" }
+        "200": { description: "{ phase, legIndex, remainingStops, currentStop, eventStop, realtimeAvailable, fetchedAt }" }
         "404": { description: "없는 트립 (NOT_FOUND)" }
     delete:
       tags: [journeys]
