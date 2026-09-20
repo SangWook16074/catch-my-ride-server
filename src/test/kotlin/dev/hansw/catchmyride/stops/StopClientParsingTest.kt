@@ -88,6 +88,30 @@ class StopClientParsingTest {
     }
 
     @Test
+    fun `검색 부제에 경유 노선의 방면 표기를 붙인다`() {
+        val result = StopSearchResult(StopType.SEOUL_BUS, "19284", "여의도환승센터", "서울 · 19284")
+
+        val merged = mergeDirection(
+            result,
+            listOf(
+                RouteResult("720", isExpress = null, directionLabel = null),
+                RouteResult("261", isExpress = null, directionLabel = "강남역 방면"),
+            ),
+        )
+
+        assertEquals("서울 · 19284 · 강남역 방면", merged.subtitle, "첫 non-null 방면이 부제 끝에 붙는다 (v0.6)")
+    }
+
+    @Test
+    fun `방면 표기가 하나도 없으면 부제는 그대로다`() {
+        val result = StopSearchResult(StopType.GYEONGGI_BUS, "228000723", "수내역", "성남시 · 07348")
+
+        val merged = mergeDirection(result, listOf(RouteResult("P9602", isExpress = null)))
+
+        assertEquals(result, merged)
+    }
+
+    @Test
     fun `빈 응답이나 결과 없음은 빈 목록이다`() {
         assertTrue(seoul.parseSearch("<ServiceResult><msgBody/></ServiceResult>", 10).isEmpty())
         assertTrue(gbis.parseSearch("""{"response":{"msgBody":{}}}""", 10).isEmpty())

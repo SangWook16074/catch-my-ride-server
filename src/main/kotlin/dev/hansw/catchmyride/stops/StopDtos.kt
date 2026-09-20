@@ -17,6 +17,18 @@ data class StopSearchResult(
 data class StopSearchResponse(val results: List<StopSearchResult>)
 
 /**
+ * 검색 부제에 방면을 붙인다 — "서울 · 19284" → "서울 · 19284 · 강남역 방면" (v0.6, 오너 요청 2026-09-20).
+ * 출발 정류장 선택 단계에서 길 건너 반대편 정류장을 구분하는 용도 — 경유 노선의 첫 방면 표기를 쓴다
+ * (버스 정류장은 전 노선이 같은 방향으로 선다). 방면이 없으면 부제를 그대로 둔다.
+ */
+internal fun mergeDirection(result: StopSearchResult, routes: List<RouteResult>): StopSearchResult =
+    routes.firstNotNullOfOrNull { it.directionLabel }
+        ?.let { label ->
+            result.copy(subtitle = if (result.subtitle.isBlank()) label else "${result.subtitle} · $label")
+        }
+        ?: result
+
+/**
  * §5-2 경유 노선 한 건. isExpress는 지하철 급행만 true, 그 외 null.
  * directionLabel(v0.6)은 버스 방면 표기("강남역 방면") — 정류장=방향이라 선택이 아닌 표기로,
  * 반대편 정류장을 고른 유저가 노선 선택 단계에서 알아채게 한다. 지하철·상류 미제공 시 null.

@@ -28,7 +28,15 @@ class GbisStopClient(
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8)
         val url = "https://apis.data.go.kr/6410000/busstationservice/v2/getBusStationListv2" +
             "?serviceKey=${props.keys.dataGoKr}&keyword=$encoded&format=json"
-        return parseSearch(fetch(url), limit)
+        // 출발 정류장 선택 단계 방면 표기(v0.6) — 서울과 동일. routeDestName은 실측 검증 대상이라
+        // 필드가 없으면 부제가 그대로 유지된다. 실패한 정류소도 기존 부제 유지 (NFR-03)
+        return parseSearch(fetch(url), limit).parallelStream().map { result ->
+            try {
+                mergeDirection(result, routes(result.stopId))
+            } catch (e: Exception) {
+                result
+            }
+        }.toList()
     }
 
     fun routes(stationId: String): List<RouteResult> {

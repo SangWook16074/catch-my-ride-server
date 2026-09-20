@@ -26,7 +26,16 @@ class SeoulBusStopClient(private val props: SpikeProperties) {
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8)
         val url = "http://ws.bus.go.kr/api/rest/stationinfo/getStationByName" +
             "?serviceKey=${props.keys.dataGoKr}&stSrch=$encoded"
-        return parseSearch(fetch(url), limit)
+        // 출발 정류장 선택 단계 방면 표기(v0.6, 오너 요청 2026-09-20) — 부제에 "○○ 방면"을 붙여
+        // 동명의 길 건너 반대편 정류장을 검색 결과에서 바로 구분하게 한다. 정류소당 getStationByUid
+        // 1회(결과 최대 10건, 검색은 온보딩에서만) — 실패한 정류소는 방면 없이 기존 부제 유지 (NFR-03)
+        return parseSearch(fetch(url), limit).parallelStream().map { result ->
+            try {
+                mergeDirection(result, routes(result.stopId))
+            } catch (e: Exception) {
+                result
+            }
+        }.toList()
     }
 
     fun routes(arsId: String): List<RouteResult> {
