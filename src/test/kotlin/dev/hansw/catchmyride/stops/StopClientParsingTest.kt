@@ -39,19 +39,21 @@ class StopClientParsingTest {
     }
 
     @Test
-    fun `서울 정류소 경유 노선 XML을 중복 없이 파싱한다`() {
+    fun `서울 정류소 경유 노선 XML을 중복 없이 방면 표기와 함께 파싱한다`() {
         val body = """
             <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
             <ServiceResult><msgBody>
-            <itemList><rtNm>720</rtNm><arrmsg1>3분후[2번째 전]</arrmsg1></itemList>
+            <itemList><rtNm>720</rtNm><adirection>강남역</adirection><arrmsg1>3분후[2번째 전]</arrmsg1></itemList>
             <itemList><rtNm>261</rtNm></itemList>
-            <itemList><rtNm>720</rtNm></itemList>
+            <itemList><rtNm>720</rtNm><adirection>강남역</adirection></itemList>
             </msgBody></ServiceResult>
         """.trimIndent()
 
         val routes = seoul.parseRoutes(body)
 
         assertEquals(listOf("720", "261"), routes.map { it.name })
+        assertEquals("강남역 방면", routes[0].directionLabel, "adirection이 있으면 '○○ 방면'으로 표기 (v0.6)")
+        assertEquals(null, routes[1].directionLabel, "adirection 미제공 노선은 방면 없이 노선명만")
     }
 
     @Test
@@ -74,13 +76,15 @@ class StopClientParsingTest {
     fun `GBIS 경유 노선 JSON을 파싱한다`() {
         val body = """
             {"response":{"msgBody":{"busRouteList":[
-              {"routeId":233000374,"routeName":"P9602"},{"routeId":233000031,"routeName":"9401"}
+              {"routeId":233000374,"routeName":"P9602","routeDestName":"강남역"},{"routeId":233000031,"routeName":"9401"}
             ]}}}
         """.trimIndent()
 
         val routes = gbis.parseRoutes(body)
 
         assertEquals(listOf("P9602", "9401"), routes.map { it.name })
+        assertEquals("강남역 방면", routes[0].directionLabel, "routeDestName이 있으면 '○○ 방면' — 필드 자체는 실측 검증 대상(v0.6)")
+        assertEquals(null, routes[1].directionLabel)
     }
 
     @Test

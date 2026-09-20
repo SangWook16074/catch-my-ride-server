@@ -16,8 +16,12 @@ data class StopSearchResult(
 
 data class StopSearchResponse(val results: List<StopSearchResult>)
 
-/** §5-2 경유 노선 한 건. isExpress는 지하철 급행만 true, 그 외 null */
-data class RouteResult(val name: String, val isExpress: Boolean?)
+/**
+ * §5-2 경유 노선 한 건. isExpress는 지하철 급행만 true, 그 외 null.
+ * directionLabel(v0.6)은 버스 방면 표기("강남역 방면") — 정류장=방향이라 선택이 아닌 표기로,
+ * 반대편 정류장을 고른 유저가 노선 선택 단계에서 알아채게 한다. 지하철·상류 미제공 시 null.
+ */
+data class RouteResult(val name: String, val isExpress: Boolean?, val directionLabel: String? = null)
 
 data class StopRoutesResponse(val routes: List<RouteResult>)
 

@@ -47,6 +47,8 @@ class GbisBusAdapter(
             stopId = stationId,
             routeName = routeName,
             direction = null,
+            // routeDestName(종점)은 문서 기준 — 실측에서 없으면 null로 방면 표기만 빠진다 (v0.6 실측 검증 대상)
+            directionLabel = textOrNull("routeDestName")?.let { "$it 방면" },
             predictedSecondsToArrival = minutes * 60,
             remainingStops = textOrNull(stopsField)?.toIntOrNull(),
             isExpress = null,

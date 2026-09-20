@@ -46,6 +46,8 @@ class TopisBusAdapter(private val props: SpikeProperties) {
             stopId = arsId,
             routeName = routeName,
             direction = null,
+            // adirection = 이 정류소에서의 노선 진행 방면(예: "강남역") — 버스 방면 표기(v0.6, FR-501 개정)
+            directionLabel = textOrNull("adirection")?.let { "$it 방면" },
             predictedSecondsToArrival = textOrNull(timeField)?.toIntOrNull(),
             remainingStops = REMAINING_STOPS.find(message)?.groupValues?.get(1)?.toIntOrNull(),
             isExpress = null,

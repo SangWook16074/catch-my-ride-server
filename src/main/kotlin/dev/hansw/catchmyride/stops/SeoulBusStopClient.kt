@@ -50,7 +50,16 @@ class SeoulBusStopClient(private val props: SpikeProperties) {
 
     internal fun parseRoutes(body: String): List<RouteResult> =
         xmlMapper.readTree(body).path("msgBody").path("itemList").asItemList()
-            .mapNotNull { it.textOrNull("rtNm") }
-            .distinct()
-            .map { RouteResult(name = it, isExpress = null) }
+            .mapNotNull { item ->
+                val name = item.textOrNull("rtNm") ?: return@mapNotNull null
+                name to item.textOrNull("adirection")
+            }
+            .groupBy({ it.first }, { it.second })
+            .map { (name, directions) ->
+                RouteResult(
+                    name = name,
+                    isExpress = null,
+                    directionLabel = directions.firstNotNullOfOrNull { it }?.let { "$it 방면" },
+                )
+            }
 }

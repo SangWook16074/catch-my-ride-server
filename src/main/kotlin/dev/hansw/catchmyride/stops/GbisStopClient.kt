@@ -53,9 +53,19 @@ class GbisStopClient(
             }
             .take(limit)
 
+    // routeDestName(종점 정류소명)은 문서 기준 — 실측에서 필드가 없으면 방면 없이 노선명만 내려간다 (v0.6 실측 검증 대상)
     internal fun parseRoutes(body: String): List<RouteResult> =
         objectMapper.readTree(body).path("response").path("msgBody").path("busRouteList").asItemList()
-            .mapNotNull { it.textOrNull("routeName") }
-            .distinct()
-            .map { RouteResult(name = it, isExpress = null) }
+            .mapNotNull { item ->
+                val name = item.textOrNull("routeName") ?: return@mapNotNull null
+                name to item.textOrNull("routeDestName")
+            }
+            .groupBy({ it.first }, { it.second })
+            .map { (name, destinations) ->
+                RouteResult(
+                    name = name,
+                    isExpress = null,
+                    directionLabel = destinations.firstNotNullOfOrNull { it }?.let { "$it 방면" },
+                )
+            }
 }

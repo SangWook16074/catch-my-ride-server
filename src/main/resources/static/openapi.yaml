@@ -722,7 +722,7 @@ components:
         directionLabel:
           type: string
           nullable: true
-          description: 열차별 행선지 표기(화면 방면 표시용, v0.4) — 상류 형식이 다르면 null → direction으로 폴백. 버스는 null
+          description: 행선지·방면 표기(화면 방면 표시용) — 지하철 "당고개행"(v0.4) / 버스 "강남역 방면"(v0.6). 상류 미제공이면 null → direction으로 폴백
           example: 당고개행
         secondsToArrival:
           type: integer
@@ -784,6 +784,11 @@ components:
             properties:
               name: { type: string, example: "720" }
               isExpress: { type: boolean, nullable: true }
+              directionLabel:
+                type: string
+                nullable: true
+                description: 버스 방면 표기(v0.6) — "강남역 방면". 반대편 정류장 선택을 노선 선택 단계에서 알아채게 한다. 지하철·상류 미제공 시 null
+                example: 강남역 방면
     StopDirectionsResponse:
       type: object
       required: [directions]

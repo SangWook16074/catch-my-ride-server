@@ -12,7 +12,7 @@ data class Arrival(
     val stopDisplayName: String,
     val routeName: String,          // 통근 설정에 저장된 표기 그대로
     val direction: String?,         // 방면 키(지하철 상행/하행·내선/외선, 버스는 null) — 배차 외삽(S-4) 그룹 키·저장 방면 매칭
-    val directionLabel: String?,    // 열차별 행선지("당고개행") — 화면 표시용, 없으면 direction으로 폴백 (FR-501 개정)
+    val directionLabel: String?,    // 행선지·방면 표기 — 지하철 "당고개행" / 버스 "강남역 방면"(v0.6), 없으면 direction으로 폴백 (FR-501 개정)
     val secondsToArrival: Int?,     // null = 실시간 정보 없음
     val remainingStops: Int?,
     val isExpress: Boolean?,        // 지하철만, 버스는 null (FR-203)
