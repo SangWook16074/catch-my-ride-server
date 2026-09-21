@@ -27,6 +27,10 @@ import java.time.LocalDateTime
  *   저장하지 않아 updated_at이 두절 시점에 묶인다 — 방치 트립 자동 정리(STALE_AFTER)가 살아있어야 한다
  * - 상류 장애는 LOST가 아니다 — realtimeAvailable=false로 표시하고 상태 유지 (NFR-03)
  * - 폴링은 역·노선 단위 스냅샷 재사용(같은 틱 안 캐시) — 같은 하차역/노선의 트립 N개 = 상류 1회 (NFR-08)
+ * - 방면은 서버가 정한다 (2026-09-21 QA 개정, Heading.kt): 탑승·하차역 id 순번과 전광판 방면별 이전/다음 역 id로
+ *   구간의 진행 방면(UP/DOWN)을 판정하고, 후보 수집·특정·노선 목격을 그 방면으로만 좁힌다. 판정 전엔
+ *   방면 필터 없이 자기선택으로 강등하되 단일 후보 위치 표시는 하지 않는다(반대 방면 열차를 보여줬던 사고).
+ *   판정되는 순간 후보를 그 방면으로 다시 잡고, 특정 전엔 매 틱 탑승역에서 후보를 보태 늦게 시작한 트립도 흡수한다
  * - 노선 전체 위치(realtimePosition)는 보강 피드다 (2026-09-16 출근 실측: 하차역 전광판은 방면당
  *   1·2번째 열차만 보여줘 특정 전엔 내내 "위치 확인 중", 특정 후에도 뒤차에 밀리면 3분 두절 LOST가 났다):
  *   특정 전 후보 목격 = 타임아웃 억제 + 단일 후보면 currentStop 제공, 특정 후 목격 = 두절 LOST 방지.
@@ -37,6 +41,7 @@ import java.time.LocalDateTime
 class TripTrackingScheduler(
     private val trips: TripRepository,
     private val trains: TrainPositions,
+    private val stationIds: StationIdCache,
     private val pushTokens: PushTokenRepository,
     private val fcm: FcmPushClient,
     private val clock: Clock,
@@ -83,36 +88,56 @@ class TripTrackingScheduler(
             }
             return
         }
-        val matching = approaching.filter { it.matchesLine(leg.line) }
+        stationIds.learn(approaching)
 
         var tracked = trip.copy(realtimeAvailable = true)
         if (tracked.btrainNo == null) {
-            if (tracked.candidates.isEmpty()) {
-                // 시작 순간 탑승역 전광판이 비어 있던 트립(2026-09-16 저녁 실측: 후보 0개 →
-                // 영영 특정 불가·15분 LOST) — 특정 전까지 탑승역을 계속 봐서 처음 나타나는
-                // 열차를 후보로 잡는다. 플랫폼에서 "미리 시작"하는 실사용 패턴도 흡수된다
-                val seeded = snapshots.getOrPut(leg.boardStop) {
-                    runCatching { trains.approaching(leg.boardStop) }
-                }.getOrNull()?.let { boardingCandidates(it, leg.line) }.orEmpty()
-                if (seeded.isNotEmpty()) {
-                    tracked = tracked.copy(candidates = seeded)
-                    log.info("후보 지연 수집 — trip={} 후보={}대", tracked.tripId, seeded.size)
+            // 특정 전엔 매 틱 탑승역 전광판도 본다 — 후보 보강(아래)과 역 id 학습(방면 판정) 겸용
+            val boardRows = snapshots.getOrPut(leg.boardStop) {
+                runCatching { trains.approaching(leg.boardStop) }
+            }.getOrNull().orEmpty()
+            stationIds.learn(boardRows)
+            // 방면 판정 — 시작 때 못 정했으면 매 틱 다시 시도 (양쪽 전광판 + 학습된 역 id, 부족하면 노선 위치)
+            var headingResolvedNow = false
+            if (tracked.heading == null) {
+                if (stationIds.get(leg.line, leg.boardStop) == null || stationIds.get(leg.line, leg.alightStop) == null) {
+                    onLine(leg.line, lineSnapshots) // 역명→id 학습 부수효과
+                }
+                val boardId = stationIds.get(leg.line, leg.boardStop)
+                val alightId = stationIds.get(leg.line, leg.alightStop)
+                if (boardId != null && alightId != null) {
+                    resolveHeading(leg.line, boardId, alightId, approaching + boardRows)?.let { heading ->
+                        tracked = tracked.copy(heading = heading)
+                        headingResolvedNow = true
+                        log.info("방면 판정 — trip={} leg={} {}→{} {}", tracked.tripId, tracked.legIndex, leg.boardStop, leg.alightStop, heading)
+                    }
                 }
             }
+            // 특정 전엔 매 틱 탑승역에서 후보를 보탠다 — 시작 순간 전광판이 비었거나(2026-09-16 저녁
+            // 실측) 반대 방면 열차만 잡혔던 트립(2026-09-21 QA)이 실제 탄 열차를 뒤늦게라도 잡도록.
+            // 방면이 이번 틱에 정해졌으면 이전 후보(방면 무관 수집)는 버리고 그 방면으로 다시 잡는다
+            val seeded = boardingCandidates(boardRows, leg.line, tracked.heading)
+            val candidates = if (headingResolvedNow) seeded else (tracked.candidates + seeded).distinct()
+            if (candidates != tracked.candidates) {
+                tracked = tracked.copy(candidates = candidates)
+                log.info("후보 갱신 — trip={} 후보={}대 방면={}", tracked.tripId, candidates.size, tracked.heading)
+            }
+            val matching = approaching.filter { it.matchesLine(leg.line) && it.matchesHeading(tracked.heading) }
             val candidateKeys = tracked.candidates.map(::trainNoKey).toSet()
             val found = matching.firstOrNull { trainNoKey(it.trainNo) in candidateKeys }
             if (found == null) {
                 // 하차역 전광판(방면당 1·2번째 열차만)엔 아직 없음 — 노선 전체 위치로 후보를 계속
                 // 목격한다 (2026-09-16 출근 실측: 전광판만 보면 하차역 근처까지 내내 "위치 확인 중")
                 val sighted = onLine(leg.line, lineSnapshots)
-                    .filter { it.matchesExpress(leg.line) && trainNoKey(it.trainNo) in candidateKeys }
+                    .filter { it.matchesExpress(leg.line) && it.matchesHeading(tracked.heading) && trainNoKey(it.trainNo) in candidateKeys }
                 if (sighted.isNotEmpty()) {
                     tracked = tracked.copy(
                         phase = TripPhase.TRACKING,
                         lastSeenAt = now,
-                        // 후보가 1대일 때만 위치를 보여준다 — 여러 대면 유저가 탄 열차를 몰라
-                        // 아는 척하지 않는다 (NFR-03). 카운트다운은 여전히 전광판 목격부터
-                        currentStop = if (tracked.candidates.size == 1) {
+                        // 후보가 1대이고 방면이 정해졌을 때만 위치를 보여준다 — 여러 대면 유저가 탄 열차를
+                        // 몰라 아는 척하지 않고(NFR-03), 방면 미판정 단일 후보는 반대 방면 열차일 수 있다
+                        // (2026-09-21 QA). 카운트다운은 여전히 전광판 목격부터
+                        currentStop = if (tracked.candidates.size == 1 && tracked.heading != null) {
                             sighted.first().station ?: tracked.currentStop
                         } else {
                             null
@@ -140,6 +165,7 @@ class TripTrackingScheduler(
         }
 
         val trackedKey = trainNoKey(tracked.btrainNo!!)
+        val matching = approaching.filter { it.matchesLine(leg.line) && it.matchesHeading(tracked.heading) }
         val train = matching.firstOrNull { trainNoKey(it.trainNo) == trackedKey }
         if (train == null) {
             // 하차역 통과·도착 후엔 목록에서 사라진다 — 직전에 1정거장 이내였다면 도착으로 본다
@@ -150,7 +176,7 @@ class TripTrackingScheduler(
             }
             // 뒤차에 밀려 전광판(방면당 2대)에서 빠질 수 있다 — 노선 전체 위치로 계속 목격 (2026-09-16)
             val onLineTrain = onLine(leg.line, lineSnapshots)
-                .firstOrNull { it.matchesExpress(leg.line) && trainNoKey(it.trainNo) == trackedKey }
+                .firstOrNull { it.matchesExpress(leg.line) && it.matchesHeading(tracked.heading) && trainNoKey(it.trainNo) == trackedKey }
             if (onLineTrain != null) {
                 tracked = tracked.copy(
                     currentStop = onLineTrain.station ?: tracked.currentStop,
@@ -221,6 +247,7 @@ class TripTrackingScheduler(
     private fun onLine(legLine: String, cache: MutableMap<String, List<LineTrain>>): List<LineTrain> =
         cache.getOrPut(lineBase(legLine)) {
             runCatching { trains.onLine(lineBase(legLine)) }.getOrElse { emptyList() }
+                .also { stationIds.learn(lineBase(legLine), it) }
         }
 
     /** 하차역 도착 — 마지막 구간이면 DONE, 아니면 TRANSFER(다음 구간 수동 재개 대기) */

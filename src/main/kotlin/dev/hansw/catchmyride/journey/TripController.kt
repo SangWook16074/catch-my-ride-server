@@ -26,6 +26,7 @@ class TripController(
     private val trips: TripRepository,
     private val journeys: JourneyRepository,
     private val trains: TrainPositions,
+    private val stationIds: StationIdCache,
     private val legValidator: JourneyLegValidator,
     private val userKeys: UserKeyResolver,
     private val clock: Clock,
@@ -80,6 +81,7 @@ class TripController(
             throw ApiException.invalidRequest("진행 중인 트립이 있습니다: ${it.tripId}")
         }
         val now = LocalDateTime.now(clock)
+        val seed = seedLeg(legs.first())
         val trip = Trip(
             tripId = UUID.randomUUID().toString(),
             userKey = userKey,
@@ -88,7 +90,8 @@ class TripController(
             legIndex = 0,
             phase = TripPhase.TRACKING,
             btrainNo = null,
-            candidates = identifyCandidates(legs.first()),
+            candidates = seed.candidates,
+            heading = seed.heading,
             remainingStops = null,
             realtimeAvailable = true,
             legStartedAt = now,
@@ -129,11 +132,13 @@ class TripController(
         val now = LocalDateTime.now(clock)
         val nextIndex = trip.legIndex + 1
         val nextLeg = trip.legs[nextIndex]
+        val seed = seedLeg(nextLeg)
         val resumed = trip.copy(
             legIndex = nextIndex,
             phase = TripPhase.TRACKING,
             btrainNo = null,
-            candidates = identifyCandidates(nextLeg),
+            candidates = seed.candidates,
+            heading = seed.heading, // 새 구간 — 방면도 새로 판정 (환승 후 반대 방면 문제의 핵심)
             remainingStops = null,
             currentStop = null, // 새 구간 — 이전 구간의 위치 역명을 이월하지 않는다
             realtimeAvailable = true,
@@ -175,16 +180,39 @@ class TripController(
         return trip
     }
 
+    private data class LegSeed(val heading: Heading?, val candidates: List<String>)
+
     /**
-     * 탑승역에서 지금 도착·출발 중인 열차 후보 — 하차역 목록에 이 중 하나가 나타나면
-     * 그 열차가 우리 열차다(방향 자기선택). 상류 실패·빈 전광판이면 빈 후보 —
-     * 특정 전까지 추적 엔진이 탑승역을 계속 봐서 재수집한다 (2026-09-16 저녁 실측 개정)
+     * 구간 시작 시드 — 방면 판정 + 탑승 후보.
+     * 방면: 탑승역·하차역 전광판의 역 id와 방면별 이전/다음 역 id로 서버가 정한다(Heading.kt) — 유저에게
+     * 상행/하행을 묻지 않는다 (2026-09-21 QA: 충무로→교대에서 반대 방면 열차를 후보로 잡아 반대로 추적).
+     * 후보: 탑승역에서 지금 도착·출발 중인 열차 중 그 방면 — 하차역 목록에 이 중 하나가 나타나면 우리 열차.
+     * 상류 실패·빈 전광판이면 빈 후보/미판정 — 추적 엔진이 매 틱 재시도한다 (2026-09-16 저녁 실측 개정)
      */
-    private fun identifyCandidates(leg: JourneyLeg): List<String> = try {
-        boardingCandidates(trains.approaching(leg.boardStop), leg.line)
-    } catch (e: Exception) {
-        log.warn("탑승 후보 열차 조회 실패 — board={}: {}", leg.boardStop, e.message)
-        emptyList()
+    private fun seedLeg(leg: JourneyLeg): LegSeed {
+        val boardRows = try {
+            trains.approaching(leg.boardStop).also(stationIds::learn)
+        } catch (e: Exception) {
+            log.warn("탑승 후보 열차 조회 실패 — board={}: {}", leg.boardStop, e.message)
+            emptyList()
+        }
+        val alightRows = try {
+            trains.approaching(leg.alightStop).also(stationIds::learn)
+        } catch (e: Exception) {
+            log.warn("하차역 조회 실패(방면 판정용) — alight={}: {}", leg.alightStop, e.message)
+            emptyList()
+        }
+        val boardId = stationIds.get(leg.line, leg.boardStop)
+        val alightId = stationIds.get(leg.line, leg.alightStop)
+        val heading = if (boardId != null && alightId != null) {
+            resolveHeading(leg.line, boardId, alightId, boardRows + alightRows)
+        } else {
+            null
+        }
+        if (heading == null) {
+            log.info("방면 미판정(시작) — {}→{} {}: 추적 엔진이 재시도", leg.boardStop, leg.alightStop, leg.line)
+        }
+        return LegSeed(heading, boardingCandidates(boardRows, leg.line, heading))
     }
 
     companion object {

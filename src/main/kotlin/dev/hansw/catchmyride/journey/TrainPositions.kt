@@ -27,11 +27,13 @@ interface TrainPositions {
     fun onLine(line: String): List<LineTrain>
 }
 
-/** 노선 전체 위치 스냅샷의 열차 한 대 — 위치 역명만 필요하다 (정거장 카운트는 여전히 전광판 몫) */
+/** 노선 전체 위치 스냅샷의 열차 한 대 — 위치 역명·방면만 필요하다 (정거장 카운트는 여전히 전광판 몫) */
 data class LineTrain(
     val trainNo: String,
     val station: String?,    // statnNm — 열차가 지금 있는 역명
     val isExpress: Boolean?, // directAt 1(급행)·7(특급)
+    val heading: Heading? = null, // updnLine "0"(상행·내선)/"1"(하행·외선)
+    val stationId: Long? = null,  // statnId — 역 id 학습(StationIdCache)용
 )
 
 data class ApproachingTrain(
@@ -42,7 +44,15 @@ data class ApproachingTrain(
     val message: String?,     // arvlMsg2 — "[3]번째 전역 (홍제)" 등
     val secondsToArrival: Int?,
     val currentStation: String? = null, // arvlMsg3 — 열차 현재 위치 역명 (§9-3 currentStop, 모르면 null)
+    val heading: Heading? = null,       // updnLine 상행/하행/내선/외선 — 방면 필터 (2026-09-21 QA 개정)
+    val stationName: String? = null,    // statnNm — 조회 역명
+    val stationId: Long? = null,        // statnId — 조회 역 id (노선 순번)
+    val prevStationId: Long? = null,    // statnFid — 이 방면의 이전 역 id
+    val nextStationId: Long? = null,    // statnTid — 이 방면의 다음 역 id
 ) {
+    /** 방면이 정해졌으면 그 방면만 — 열차 쪽 방면을 모르면 통과(아는 척 금지, 필터로 놓치지 않는다) */
+    fun matchesHeading(required: Heading?): Boolean = required == null || heading == null || heading == required
+
     /**
      * 이 역(하차역)까지 남은 정거장 — arvlCd 우선, 운행중(99)은 메시지의 "N번째 전역" 파싱.
      * 모르면 null — 아는 척하지 않는다 (NFR-03)
@@ -92,6 +102,8 @@ class SeoulTrainPositions(
                 trainNo = trainNo,
                 station = item.textOrNull("statnNm")?.takeIf { it.isNotBlank() },
                 isExpress = item.textOrNull("directAt")?.let { it == "1" || it == "7" },
+                heading = headingOf(item.textOrNull("updnLine")),
+                stationId = item.textOrNull("statnId")?.toLongOrNull(),
             )
         }
     }
@@ -120,6 +132,11 @@ class SeoulTrainPositions(
                 message = item.textOrNull("arvlMsg2"),
                 secondsToArrival = item.textOrNull("barvlDt")?.toIntOrNull()?.takeIf { it > 0 },
                 currentStation = item.textOrNull("arvlMsg3")?.takeIf { it.isNotBlank() },
+                heading = headingOf(item.textOrNull("updnLine")),
+                stationName = item.textOrNull("statnNm")?.takeIf { it.isNotBlank() },
+                stationId = item.textOrNull("statnId")?.toLongOrNull(),
+                prevStationId = item.textOrNull("statnFid")?.toLongOrNull(),
+                nextStationId = item.textOrNull("statnTid")?.toLongOrNull(),
             )
         }
     }
@@ -150,11 +167,12 @@ private const val BOARD_WINDOW_SECONDS = 120
 
 /**
  * 탑승역 전광판에서 탑승 후보 열차 번호 추출 — 지금 도착·출발 중이거나 곧 도착할 열차.
+ * 방면이 정해졌으면 그 방면만 (2026-09-21 QA: 반대 방면 열차가 후보에 섞여 반대로 추적됐다).
  * 트립 시작(TripController)과 특정 전 재수집(TripTrackingScheduler)이 같은 규칙을 쓴다
  */
-fun boardingCandidates(approaching: List<ApproachingTrain>, legLine: String): List<String> =
+fun boardingCandidates(approaching: List<ApproachingTrain>, legLine: String, heading: Heading? = null): List<String> =
     approaching
-        .filter { it.matchesLine(legLine) }
+        .filter { it.matchesLine(legLine) && it.matchesHeading(heading) }
         .filter { (it.stationsAway ?: Int.MAX_VALUE) == 0 || (it.secondsToArrival ?: Int.MAX_VALUE) <= BOARD_WINDOW_SECONDS }
         .map { it.trainNo }
         .distinct()
@@ -176,6 +194,9 @@ fun ApproachingTrain.matchesLine(legLine: String): Boolean {
         else -> true
     }
 }
+
+/** 노선 위치 열차의 방면 매칭 — 정해진 방면이 없거나 열차 방면을 모르면 통과 */
+fun LineTrain.matchesHeading(required: Heading?): Boolean = required == null || heading == null || heading == required
 
 /** 노선 위치 열차의 급행 여부 매칭 — 노선 자체는 조회 키로 이미 고정돼 있다 */
 fun LineTrain.matchesExpress(legLine: String): Boolean = when {

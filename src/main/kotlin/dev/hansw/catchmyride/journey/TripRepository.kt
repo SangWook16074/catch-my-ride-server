@@ -16,6 +16,8 @@ data class Trip(
     val phase: TripPhase,
     val btrainNo: String?,
     val candidates: List<String>,
+    /** 이 구간의 진행 방면 — 서버 판정(Heading.kt), 모르면 null(방면 필터 없이 자기선택으로 강등) */
+    val heading: Heading? = null,
     val remainingStops: Int?,
     /** 열차 현재 위치 역명(상류 arvlMsg3) — 특정 후 목격 값, 모르면 null (§9-3 currentStop) */
     val currentStop: String? = null,
@@ -59,10 +61,10 @@ class TripRepository(
         jdbc.sql(
             """
             INSERT INTO trip (trip_id, user_key, journey_id, legs_json, leg_index, phase, btrain_no,
-                              candidates_json, remaining_stops, current_stop, realtime_available,
+                              candidates_json, heading, remaining_stops, current_stop, realtime_available,
                               leg_started_at, last_seen_at, started_at, updated_at)
             VALUES (:tripId, :userKey, :journeyId, :legs, :legIndex, :phase, :btrainNo,
-                    :candidates, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
+                    :candidates, :heading, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
             """.trimIndent(),
         )
             .param("tripId", trip.tripId)
@@ -73,6 +75,7 @@ class TripRepository(
             .param("phase", trip.phase.name)
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
+            .param("heading", trip.heading?.name)
             .param("remaining", trip.remainingStops)
             .param("currentStop", trip.currentStop)
             .param("realtime", trip.realtimeAvailable)
@@ -87,7 +90,7 @@ class TripRepository(
         jdbc.sql(
             """
             UPDATE trip SET leg_index = :legIndex, phase = :phase, btrain_no = :btrainNo,
-                            candidates_json = :candidates, remaining_stops = :remaining,
+                            candidates_json = :candidates, heading = :heading, remaining_stops = :remaining,
                             current_stop = :currentStop, realtime_available = :realtime,
                             leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt, updated_at = :now
             WHERE trip_id = :tripId
@@ -98,6 +101,7 @@ class TripRepository(
             .param("phase", trip.phase.name)
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
+            .param("heading", trip.heading?.name)
             .param("remaining", trip.remainingStops)
             .param("currentStop", trip.currentStop)
             .param("realtime", trip.realtimeAvailable)
@@ -170,6 +174,7 @@ class TripRepository(
         phase = TripPhase.valueOf(rs.getString("phase")),
         btrainNo = rs.getString("btrain_no"),
         candidates = objectMapper.readValue(rs.getString("candidates_json"), Array<String>::class.java).toList(),
+        heading = rs.getString("heading")?.let { Heading.valueOf(it) },
         remainingStops = rs.getObject("remaining_stops")?.let { (it as Number).toInt() },
         currentStop = rs.getString("current_stop"),
         realtimeAvailable = rs.getBoolean("realtime_available"),

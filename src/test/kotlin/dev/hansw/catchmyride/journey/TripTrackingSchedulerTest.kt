@@ -49,14 +49,84 @@ class TripTrackingSchedulerTest {
         clock.now = Instant.parse("2026-09-14T08:00:00Z")
     }
 
-    private fun scheduler() = TripTrackingScheduler(trips, trains, pushTokens, fcm, clock)
+    private fun scheduler() = TripTrackingScheduler(trips, trains, StationIdCache(), pushTokens, fcm, clock)
 
-    private fun insertTrip(candidates: List<String> = listOf("9027")): Trip {
+    /** 3호선 충무로(331)→교대(340) — 2026-09-21 QA 재현용 구간 (하행 = id 증가) */
+    private val line3Legs = listOf(JourneyLeg("SUBWAY", "3호선", "충무로", "교대"))
+
+    private fun line3Row(no: String, station: String, id: Long, heading: Heading, at: String? = null, message: String? = null, arvlCd: String = "99") =
+        ApproachingTrain(
+            no, line = "3호선", isExpress = false, arvlCd = arvlCd, message = message, secondsToArrival = 60,
+            currentStation = at, heading = heading, stationName = station, stationId = id,
+            prevStationId = if (heading == Heading.DOWN) id - 1 else id + 1,
+            nextStationId = if (heading == Heading.DOWN) id + 1 else id - 1,
+        )
+
+    @Test
+    fun `반대 방면 후보는 방면이 판정되는 순간 버려지고 그 방면 후보로 다시 잡는다`() {
+        // 2026-09-21 QA: 충무로에서 대화 방면(상행) 열차가 유일한 후보로 잡혀 화면이 반대로 흘렀다
+        val now = LocalDateTime.now(clock)
+        trips.insert(
+            Trip(
+                tripId = "trip-1", userKey = "dev-user", journeyId = null, legs = line3Legs,
+                legIndex = 0, phase = TripPhase.TRACKING, btrainNo = null, candidates = listOf("3300"),
+                heading = null, remainingStops = null, realtimeAvailable = true,
+                legStartedAt = now, lastSeenAt = null, startedAt = now,
+            ),
+            now,
+        )
+        val alightRows = listOf(
+            line3Row("3372", "교대", 1003000340, Heading.UP, at = "양재"),
+            line3Row("3347", "교대", 1003000340, Heading.DOWN, at = "잠원"),
+        )
+        trains["교대"] = alightRows
+        trains["충무로"] = listOf(
+            line3Row("3300", "충무로", 1003000331, Heading.UP),   // 대화 방면 — 반대
+            line3Row("3349", "충무로", 1003000331, Heading.DOWN), // 오금 방면 — 교대로 가는 방면
+        )
+        trains.line("3호선", listOf(
+            LineTrain("3300", "종로3가", isExpress = false, heading = Heading.UP, stationId = 1003000329),
+            LineTrain("3349", "동대입구", isExpress = false, heading = Heading.DOWN, stationId = 1003000332),
+        ))
+
+        scheduler().tick()
+        var saved = trips.find("trip-1")!!
+        assertEquals(Heading.DOWN, saved.heading)
+        assertEquals(listOf("3349"), saved.candidates)      // 반대 방면 3300은 버려진다
+        assertEquals("동대입구", saved.currentStop)          // 단일 후보 + 방면 확정 → 위치 표시
+        assertNull(saved.btrainNo)
+
+        // 반대 방면 열차가 하차역 전광판에 떠도 특정되지 않는다
+        trains["교대"] = alightRows + line3Row("3300", "교대", 1003000340, Heading.UP, message = "[2]번째 전역 (남부터미널)")
+        scheduler().tick()
+        assertNull(trips.find("trip-1")!!.btrainNo)
+
+        // 우리 방면 후보가 하차역에 나타나면 특정
+        trains["교대"] = listOf(line3Row("3349", "교대", 1003000340, Heading.DOWN, message = "[3]번째 전역 (신사)", at = "신사"))
+        scheduler().tick()
+        saved = trips.find("trip-1")!!
+        assertEquals("3349", saved.btrainNo)
+        assertEquals(3, saved.remainingStops)
+    }
+
+    @Test
+    fun `방면을 모르면 단일 후보라도 위치를 보여주지 않는다`() {
+        // 역 id 없는 응답(구형·민자 노선) — 방면 필터 없이 자기선택으로 강등하되 반대 방면일 수 있는 위치는 숨긴다
+        insertTrip(candidates = listOf("9027"))
+        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true)))
+        scheduler().tick()
+        val saved = trips.find("trip-1")!!
+        assertNull(saved.heading)
+        assertNull(saved.currentStop)
+        assertEquals(TripPhase.TRACKING, saved.phase)
+    }
+
+    private fun insertTrip(candidates: List<String> = listOf("9027"), heading: Heading? = null): Trip {
         val now = LocalDateTime.now(clock)
         val trip = Trip(
             tripId = "trip-1", userKey = "dev-user", journeyId = "j-1", legs = legs,
             legIndex = 0, phase = TripPhase.TRACKING, btrainNo = null, candidates = candidates,
-            remainingStops = null, realtimeAvailable = true,
+            heading = heading, remainingStops = null, realtimeAvailable = true,
             legStartedAt = now, lastSeenAt = null, startedAt = now,
         )
         trips.insert(trip, now)
@@ -219,9 +289,9 @@ class TripTrackingSchedulerTest {
 
     @Test
     fun `특정 전에도 단일 후보는 노선 위치로 현재 역을 보여준다`() {
-        insertTrip() // 후보 9027 하나 — "탔어요" 직후의 흔한 상태
+        insertTrip(heading = Heading.UP) // 후보 9027 하나 + 방면 확정 — "탔어요" 직후의 흔한 상태
         trains["당산"] = emptyList() // 하차역 전광판(방면당 1·2번째)엔 아직 없음
-        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true)))
+        trains.line("9호선", listOf(LineTrain("9027", "샛강", isExpress = true, heading = Heading.UP)))
         scheduler().tick()
         val saved = trips.find("trip-1")!!
         assertEquals(TripPhase.TRACKING, saved.phase)
