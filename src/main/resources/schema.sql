@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS journey (
 CREATE TABLE IF NOT EXISTS trip (
     trip_id            VARCHAR(36) PRIMARY KEY,
     user_key           VARCHAR(128) NOT NULL UNIQUE,
-    journey_id         VARCHAR(36) NOT NULL,
+    journey_id         VARCHAR(36),          -- 저장 여정 id (null = 1회성 트립, FR-708)
     legs_json          TEXT NOT NULL,
     leg_index          INT NOT NULL,
     phase              VARCHAR(16) NOT NULL, -- TRACKING | ARRIVING | TRANSFER | DONE | LOST
@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS trip (
 
 -- 2026-09-15 마이그레이션 — 기존 배포 DB에 현재 위치 역명 컬럼 추가 (§9-3 currentStop)
 ALTER TABLE trip ADD COLUMN IF NOT EXISTS current_stop VARCHAR(64);
+-- 2026-09-21 마이그레이션 — 1회성(여정 비귀속) 트립 허용 (§9-2 POST /api/v1/trips, FR-708)
+ALTER TABLE trip ALTER COLUMN journey_id DROP NOT NULL;
 
 -- FR-704 이벤트(구간 하차)당 최대 2회(PRE·ALIGHT) — PK가 중복 발송을 구조적으로 막는다 (push_log와 동일 설계)
 CREATE TABLE IF NOT EXISTS trip_push_log (

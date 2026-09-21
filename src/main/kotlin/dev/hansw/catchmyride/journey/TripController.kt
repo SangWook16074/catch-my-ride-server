@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
@@ -17,7 +18,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
- * API.md §9-2/9-3 — 트립 시작·상태·환승 재개·종료.
+ * API.md §9-2/9-3 — 트립 시작(저장 여정 / 1회성 인라인 구간)·상태·환승 재개·종료.
  * GET은 저장된 추적 상태를 읽기만 한다 — 전진은 TripTrackingScheduler가 담당 (서버 권위).
  */
 @RestController
@@ -25,6 +26,7 @@ class TripController(
     private val trips: TripRepository,
     private val journeys: JourneyRepository,
     private val trains: TrainPositions,
+    private val legValidator: JourneyLegValidator,
     private val userKeys: UserKeyResolver,
     private val clock: Clock,
 ) {
@@ -32,6 +34,7 @@ class TripController(
     private val log = LoggerFactory.getLogger(javaClass)
 
     data class StartResponse(val tripId: String, val startedAt: String)
+    data class QuickStartRequest(val legs: List<LegRequest>?)
     data class StatusResponse(
         val phase: String,
         val legIndex: Int,
@@ -50,20 +53,42 @@ class TripController(
     ): StartResponse {
         val userKey = userKeys.resolve(auth)
         val journey = journeys.find(userKey, journeyId) ?: throw ApiException.settingNotFound()
+        val trip = startTrip(userKey, journeyId = journeyId, legs = journey.legs)
+        journeys.touchLastUsed(userKey, journeyId, trip.startedAt) // 히스토리 정렬 키 (§9-2)
+        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
+    }
+
+    /**
+     * 여정 비귀속 1회성 트립 시작 (§9-2 `POST /api/v1/trips`, FR-708) — 저장 없이 인라인 구간으로
+     * 바로 추적한다. 검증·동시 1개 규칙은 저장 여정과 동일, 여정 히스토리(lastUsedAt)에는 비귀속.
+     * 트립 레코드가 legs 스냅숏을 들고 있으므로 추적 엔진·푸시는 그대로 재사용된다.
+     */
+    @PostMapping("/api/v1/trips")
+    @ResponseStatus(HttpStatus.CREATED)
+    fun quickStart(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @RequestBody request: QuickStartRequest,
+    ): StartResponse {
+        val userKey = userKeys.resolve(auth)
+        val legs = legValidator.validate(request.legs)
+        val trip = startTrip(userKey, journeyId = null, legs = legs)
+        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
+    }
+
+    private fun startTrip(userKey: String, journeyId: String?, legs: List<JourneyLeg>): Trip {
         trips.findByUser(userKey)?.let {
             throw ApiException.invalidRequest("진행 중인 트립이 있습니다: ${it.tripId}")
         }
         val now = LocalDateTime.now(clock)
-        val firstLeg = journey.legs.first()
         val trip = Trip(
             tripId = UUID.randomUUID().toString(),
             userKey = userKey,
             journeyId = journeyId,
-            legs = journey.legs,
+            legs = legs,
             legIndex = 0,
             phase = TripPhase.TRACKING,
             btrainNo = null,
-            candidates = identifyCandidates(firstLeg),
+            candidates = identifyCandidates(legs.first()),
             remainingStops = null,
             realtimeAvailable = true,
             legStartedAt = now,
@@ -71,8 +96,7 @@ class TripController(
             startedAt = now,
         )
         trips.insert(trip, now)
-        journeys.touchLastUsed(userKey, journeyId, now) // 히스토리 정렬 키 (§9-2)
-        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
+        return trip
     }
 
     @GetMapping("/api/v1/trips/{tripId}")

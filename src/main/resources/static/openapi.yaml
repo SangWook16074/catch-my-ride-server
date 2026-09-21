@@ -536,6 +536,33 @@ paths:
       responses:
         "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
         "400": { description: "진행 중 트립 존재 (메시지에 기존 tripId)" }
+  /api/v1/trips:
+    post:
+      tags: [journeys]
+      summary: "§9-2 1회성 트립 시작 (FR-708) — 여정 저장 없이 인라인 구간으로 추적. 검증·동시 1개 규칙은 여정과 동일, 히스토리 비귀속"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [legs]
+              properties:
+                legs:
+                  type: array
+                  minItems: 1
+                  maxItems: 4
+                  items:
+                    type: object
+                    required: [type, line, boardStop, alightStop]
+                    properties:
+                      type: { type: string, enum: [SUBWAY] }
+                      line: { type: string, example: "9호선 급행" }
+                      boardStop: { type: string, example: "여의도" }
+                      alightStop: { type: string, example: "당산" }
+      responses:
+        "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
+        "400": { description: "구간 검증 실패 또는 진행 중 트립 존재 (메시지에 기존 tripId)" }
   /api/v1/trips/{tripId}:
     get:
       tags: [journeys]

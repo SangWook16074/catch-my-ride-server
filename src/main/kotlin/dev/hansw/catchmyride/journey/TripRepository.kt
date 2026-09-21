@@ -9,7 +9,8 @@ import tools.jackson.databind.ObjectMapper
 data class Trip(
     val tripId: String,
     val userKey: String,
-    val journeyId: String,
+    /** 저장 여정 id — 1회성 트립(§9-2 `POST /api/v1/trips`, FR-708)은 null */
+    val journeyId: String?,
     val legs: List<JourneyLeg>,
     val legIndex: Int,
     val phase: TripPhase,

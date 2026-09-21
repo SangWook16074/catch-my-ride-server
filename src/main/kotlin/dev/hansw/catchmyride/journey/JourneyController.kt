@@ -2,7 +2,6 @@ package dev.hansw.catchmyride.journey
 
 import dev.hansw.catchmyride.api.ApiException
 import dev.hansw.catchmyride.api.UserKeyResolver
-import dev.hansw.catchmyride.stops.SubwayStationCatalog
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
@@ -19,20 +18,17 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /**
- * API.md §9-1 — 여정 CRUD. 검증은 "탐색"이 아니라 형태·존재 확인까지만:
- * 역이 카탈로그에 있는가, 노선이 그 역을 지나는가. 방면·도달 순서는 추적 단계에서
- * 열차가 자기선택한다(탑승역에 있던 열차가 하차역에 접근 = 올바른 방향).
+ * API.md §9-1 — 여정 CRUD. 구간 검증 규칙은 [JourneyLegValidator] (1회성 트립 시작과 공용).
  */
 @RestController
 class JourneyController(
     private val repository: JourneyRepository,
     private val trips: TripRepository,
-    private val catalog: SubwayStationCatalog,
+    private val legValidator: JourneyLegValidator,
     private val userKeys: UserKeyResolver,
     private val clock: Clock,
 ) {
 
-    data class LegRequest(val type: String?, val line: String?, val boardStop: String?, val alightStop: String?)
     data class JourneyRequest(val label: String?, val repeatDays: List<String>?, val legs: List<LegRequest>?)
     data class JourneyResponse(
         val id: String,
@@ -102,38 +98,8 @@ class JourneyController(
         if (repeatDays.any { it !in DAY_CODES }) {
             throw ApiException.invalidRequest("repeatDays는 MON~SUN이어야 합니다")
         }
-        val legRequests = request.legs.orEmpty()
-        if (legRequests.isEmpty() || legRequests.size > MAX_JOURNEY_LEGS) {
-            throw ApiException.invalidRequest("구간은 1~${MAX_JOURNEY_LEGS}개여야 합니다")
-        }
-        val legs = legRequests.map { toLeg(it) }
+        val legs = legValidator.validate(request.legs)
         return Journey(id = journeyId, label = label, repeatDays = repeatDays, legs = legs, lastUsedAt = null)
-    }
-
-    private fun toLeg(request: LegRequest): JourneyLeg {
-        if (request.type != "SUBWAY") {
-            throw ApiException.invalidRequest("v1은 지하철(SUBWAY) 구간만 지원합니다")
-        }
-        val line = request.line?.trim().orEmpty()
-        val board = request.boardStop?.trim().orEmpty()
-        val alight = request.alightStop?.trim().orEmpty()
-        if (line.isEmpty() || board.isEmpty() || alight.isEmpty()) {
-            throw ApiException.invalidRequest("구간의 노선·탑승 역·하차 역을 모두 입력해야 합니다")
-        }
-        if (board == alight) {
-            throw ApiException.invalidRequest("탑승 역과 하차 역이 같습니다: $board")
-        }
-        val boardRoutes = catalog.routes(board)
-            ?: throw ApiException.invalidRequest("알 수 없는 역입니다: $board")
-        if (boardRoutes.none { it.name == line }) {
-            throw ApiException.invalidRequest("$board 역을 지나지 않는 노선입니다: $line")
-        }
-        val alightRoutes = catalog.routes(alight)
-            ?: throw ApiException.invalidRequest("알 수 없는 역입니다: $alight")
-        if (alightRoutes.none { it.name == line }) {
-            throw ApiException.invalidRequest("이 노선으로 갈 수 없는 구간입니다: $board → $alight ($line)")
-        }
-        return JourneyLeg(type = "SUBWAY", line = line, boardStop = board, alightStop = alight)
     }
 
     private fun Journey.toResponse() = JourneyResponse(
