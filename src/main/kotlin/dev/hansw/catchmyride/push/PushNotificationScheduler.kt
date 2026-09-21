@@ -32,7 +32,8 @@ import java.time.ZonedDateTime
  * - 시간대 밖 경로는 공공 API 폴링 자체를 하지 않는다 (NFR-08 쿼터 보호)
  *
  * 발송 순서는 "로그 선기록 → 발송 → delivered 갱신, 실패 시 로그 롤백" — 어떤 크래시 시점에도
- * 재발송이 최대 1회 지연될 뿐 초과 발송은 없다. 단일 인스턴스 전제(DEPLOY.md)라 분산 락은 두지 않는다.
+ * 재발송이 최대 1회 지연될 뿐 초과 발송은 없다. 단, 토스가 규격 오류로 거부한 발송(PushRejectedException)은
+ * 롤백하지 않는다 — 재시도해도 같은 거부라 호출만 쌓인다 (2026-09-21 앱인토스 경고 메일). 단일 인스턴스 전제(DEPLOY.md)라 분산 락은 두지 않는다.
  */
 @Component
 @ConditionalOnProperty("push.enabled", havingValue = "true", matchIfMissing = true)
@@ -104,6 +105,13 @@ class PushNotificationScheduler(
                 ?.let { fcm.send(userKey, it, decision, today) }
                 ?: client.send(userKey, decision)
             if (delivered) pushLog.markDelivered(userKey, route.id, today, decision.stage, cycle)
+        } catch (e: PushRejectedException) {
+            // 규격 거부(4xx·FAIL)는 다시 보내도 같은 답 — 로그를 남겨(미전달) 이 스테이지를 다시 부르지 않는다.
+            // 종전엔 롤백 후 30초마다 재호출돼 토스 측에 "잘못된 규격 분당 N건" 경고를 유발했다 (2026-09-21)
+            log.error(
+                "푸시 규격 거부 — user={} route={} stage={}, 재시도 안 함(원인 조치 필요): {}",
+                userKey, route.id, decision.stage, e.message,
+            )
         } catch (e: Exception) {
             pushLog.delete(userKey, route.id, today, decision.stage, cycle) // 다음 틱에 재시도
             log.warn(

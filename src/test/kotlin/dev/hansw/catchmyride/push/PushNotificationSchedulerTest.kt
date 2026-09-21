@@ -202,6 +202,26 @@ class PushNotificationSchedulerTest {
     }
 
     @Test
+    fun `토스가 규격 오류로 거부한 발송은 롤백하지 않아 같은 스테이지를 다시 부르지 않는다`() {
+        // 2026-09-21 앱인토스 경고: 거부된 호출이 30초마다 재시도돼 "잘못된 규격 분당 N건"으로 집계됐다
+        val userKey = "push-test-rejected"
+        routes.insert(userKey, route("r1", "출근", fixedSetting(activeDays = listOf("TUE"))))
+        val scheduler = scheduler()
+        clock.set("2026-09-01T08:19:30")
+
+        client.rejectNext = true
+        scheduler.tick()
+        assertEquals(0, client.sends.size)
+        assertEquals(setOf(PushStage.REMIND), pushLog.sentStages(userKey, "r1", clock.today()), "거부는 미전달로 남긴다")
+
+        clock.set("2026-09-01T08:20:00")
+        scheduler.tick() // 다음 틱 — 재호출 없음
+        clock.set("2026-09-01T08:20:30")
+        scheduler.tick()
+        assertEquals(0, client.sends.size, "거부된 스테이지 재호출 금지: ${client.sends}")
+    }
+
+    @Test
     fun `추천 모드는 시간대 안이면 리마인드 후에도 다음 차로 새 사이클을 반복한다`() {
         val userKey = "push-test-window-cycles"
         routes.insert(userKey, route("r1", "출근", recommendedSetting(activeDays = listOf("TUE"))))
@@ -355,10 +375,15 @@ class PushNotificationSchedulerTest {
     private inner class RecordingPushClient : AppsInTossPushClient(PushProperties()) {
         val sends = mutableListOf<PushDecision>()
         var failNext = false
+        var rejectNext = false
         override fun send(userKey: String, decision: PushDecision): Boolean {
             if (failNext) {
                 failNext = false
                 throw RuntimeException("발송 실패(테스트)")
+            }
+            if (rejectNext) {
+                rejectNext = false
+                throw PushRejectedException("send-message FAIL(테스트)")
             }
             sends += decision
             return false // dry-run과 동일 — delivered=false 기록
