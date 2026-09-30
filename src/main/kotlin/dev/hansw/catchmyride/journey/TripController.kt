@@ -58,6 +58,12 @@ class TripController(
         val currentStop: String?,
         val eventStop: String,
         val realtimeAvailable: Boolean,
+        /**
+         * 이 열차를 상류에서 **마지막으로 목격한 시각** (없으면 null) — 특정 후 목격이 끊겨도 추적을
+         * 끊지 않기로 했으므로(오너 결정 2026-09-30), 화면이 "언제 기준 값인지" 말할 수 있어야 한다.
+         * 낡은 숫자를 현재처럼 보여주는 건 조용히 틀리는 것과 같다 (NFR-03)
+         */
+        val lastSeenAt: String?,
         val fetchedAt: String,
     )
 
@@ -137,6 +143,7 @@ class TripController(
             currentStop = trip.currentStop, // 열차 현재 위치 역명(상류 arvlMsg3) — 모르면 null (API.md §9-3)
             eventStop = trip.currentLeg.alightStop,
             realtimeAvailable = trip.realtimeAvailable,
+            lastSeenAt = trip.lastSeenAt?.format(ISO),
             fetchedAt = LocalDateTime.now(clock).format(ISO),
         )
     }
@@ -178,6 +185,7 @@ class TripController(
             currentStop = null,
             eventStop = nextLeg.alightStop,
             realtimeAvailable = true,
+            lastSeenAt = null, // 새 구간 — 아직 목격 없음
             fetchedAt = now.format(ISO),
         )
     }
@@ -240,6 +248,7 @@ class TripController(
             currentStop = null,
             eventStop = leg.alightStop,
             realtimeAvailable = true,
+            lastSeenAt = null, // 다시 잡기 — 목격 기록도 초기화된다
             fetchedAt = now.format(ISO),
         )
     }

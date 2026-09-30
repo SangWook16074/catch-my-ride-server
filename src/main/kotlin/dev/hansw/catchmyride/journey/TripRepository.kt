@@ -100,14 +100,20 @@ class TripRepository(
             .update()
     }
 
-    fun save(trip: Trip, now: LocalDateTime) {
+    /**
+     * @param touch false면 `updated_at`을 올리지 않는다 — 목격이 끊긴 채 상태만 갱신할 때 쓴다.
+     * 방치 트립 자동 정리(STALE_AFTER)가 **마지막으로 실제 진전이 있던 시점**부터 재게 하려면
+     * 여기서 시계를 올리지 않아야 한다 (LOST가 저장을 건너뛰던 것과 같은 이유, 2026-09-30)
+     */
+    fun save(trip: Trip, now: LocalDateTime, touch: Boolean = true) {
         jdbc.sql(
             """
             UPDATE trip SET leg_index = :legIndex, phase = :phase, btrain_no = :btrainNo,
                             candidates_json = :candidates, rejected_trains_json = :rejected, seed_stop = :seedStop,
                             heading = :heading, remaining_stops = :remaining,
                             current_stop = :currentStop, realtime_available = :realtime,
-                            leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt, updated_at = :now
+                            leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt
+                            ${if (touch) ", updated_at = :now" else ""}
             WHERE trip_id = :tripId
             """.trimIndent(),
         )

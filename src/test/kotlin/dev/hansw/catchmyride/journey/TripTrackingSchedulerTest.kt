@@ -16,14 +16,17 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * §9 추적 엔진 불변 조건 명세:
  * 후보 매칭으로 열차 특정(방향 자기선택) · 남은 정거장 전진 · PRE(2정거장)-ALIGHT(직전 역)
- * 이벤트당 각 1회(FR-704) · 도착 시 TRANSFER/DONE · 타임아웃·두절은 LOST(FR-706) ·
- * 상류 장애는 LOST가 아니라 realtimeAvailable=false (NFR-03).
+ * 이벤트당 각 1회(FR-704) · 도착 시 TRANSFER/DONE · **특정 실패**는 LOST(FR-706) ·
+ * 상류 장애와 **특정 후 목격 두절**은 LOST가 아니라 realtimeAvailable=false
+ * (한번 잡힌 트립은 유저가 요청하지 않는 이상 끊지 않는다 — 오너 결정 2026-09-30, NFR-03).
  */
 @SpringBootTest
 class TripTrackingSchedulerTest {
@@ -205,7 +208,7 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
-    fun `특정 타임아웃과 목격 두절은 LOST다`() {
+    fun `특정 타임아웃은 LOST다 — 어느 열차인지 모르는 채 아는 척하지 않는다`() {
         insertTrip(candidates = emptyList()) // 후보 없음 — 특정 불가
         trains["당산"] = emptyList()
         clock.advance(Duration.ofMinutes(16))
@@ -216,26 +219,52 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
-    fun `목격 두절 LOST는 재목격되면 TRACKING으로 복구된다`() {
+    fun `특정 후 목격이 끊겨도 추적을 끊지 않는다 — 실시간 정보 없음으로 알리고 마지막 값을 지킨다`() {
+        // 오너 결정 2026-09-30: 한번 잡힌 트립은 유저가 요청하지 않는 이상 끊을 필요가 없다.
+        // 예전엔 3분 두절에 LOST로 내려 화면이 "위치 확인 중"으로 되돌아갔다(= 다시 위치를 잡는 것처럼 보였다)
         insertTrip()
         trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)", at = "선유도"))
         scheduler().tick() // 특정 — remaining 4
 
-        // 실시간 피드 두절 3분 초과 — LOST (2026-09-15 실주행에서 반드시 발생)
-        trains["당산"] = emptyList()
-        clock.advance(Duration.ofMinutes(4))
+        trains["당산"] = emptyList() // 실시간 피드 두절 (지하철에서 흔하다)
+        clock.advance(Duration.ofMinutes(4)) // 예전 LOST_AFTER(3분) 초과
         scheduler().tick()
-        val lost = trips.find("trip-1")!!
-        assertEquals(TripPhase.LOST, lost.phase)
-        assertNull(lost.currentStop) // 끊긴 채 낡은 역명을 남기지 않는다 (NFR-03)
+        val unseen = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, unseen.phase) // LOST로 내리지 않는다
+        assertEquals("9027", unseen.btrainNo)          // 같은 열차를 계속 따라간다
+        assertEquals(4, unseen.remainingStops)          // 마지막으로 확인한 값을 지킨다
+        assertEquals("선유도", unseen.currentStop)
+        assertFalse(unseen.realtimeAvailable)            // 대신 "실시간 정보 없음"으로 알린다
 
-        // 재목격 — TRACKING 복구, 남은 정거장도 다시 전진
+        // 재목격 — 남은 정거장이 다시 전진하고 실시간 표시도 돌아온다
         trains["당산"] = listOf(train("9027", message = "[3]번째 전역 (국회의사당)", at = "국회의사당"))
         scheduler().tick()
-        val recovered = trips.find("trip-1")!!
-        assertEquals(TripPhase.TRACKING, recovered.phase)
-        assertEquals(3, recovered.remainingStops)
-        assertEquals("국회의사당", recovered.currentStop)
+        val resumed = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, resumed.phase)
+        assertEquals(3, resumed.remainingStops)
+        assertEquals("국회의사당", resumed.currentStop)
+        assertTrue(resumed.realtimeAvailable)
+    }
+
+    @Test
+    fun `목격이 끊긴 채 잊힌 트립은 여전히 자동 정리된다 — updated_at을 올리지 않는다`() {
+        // 추적을 끊지 않는 대신, 정리 시계(STALE_AFTER 6시간)는 마지막 진전 시점부터 계속 가야 한다.
+        // 안 그러면 유저당 1개 규칙 때문에 잊힌 트립이 새 트립을 영영 막는다
+        insertTrip()
+        trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)", at = "선유도"))
+        scheduler().tick() // 특정
+
+        trains["당산"] = emptyList()
+        clock.advance(Duration.ofMinutes(4))
+        scheduler().tick() // 두절 — 상태만 갱신(updated_at 유지)
+
+        clock.advance(Duration.ofHours(3))
+        scheduler().tick()
+        assertNotNull(trips.find("trip-1")) // 아직 6시간 전
+
+        clock.advance(Duration.ofHours(3))
+        scheduler().tick()
+        assertNull(trips.find("trip-1")) // 마지막 진전 기준 6시간 초과 — 정리됨
     }
 
     @Test

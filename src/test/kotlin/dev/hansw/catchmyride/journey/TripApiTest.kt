@@ -53,6 +53,8 @@ class TripApiTest {
         assertTrue(status.body().contains("\"phase\":\"TRACKING\""), status.body())
         assertTrue(status.body().contains("\"eventStop\":\"당산\""), status.body())
         assertTrue(status.body().contains("\"remainingStops\":null"), status.body())
+        // 특정 전엔 목격도 없다 — 화면이 "N분 전 기준"을 말할 근거가 없으면 null이어야 한다 (§9-3 v0.9)
+        assertTrue(status.body().contains("\"lastSeenAt\":null"), status.body())
 
         val list = request(environment, "GET", "/api/v1/journeys")
         assertTrue(!list.body().contains("\"lastUsedAt\":null"), list.body()) // 히스토리 정렬 키 갱신

@@ -576,7 +576,7 @@ paths:
       summary: "§9-3 트립 상태 (클라 15~30초 폴링). TRACKING의 remainingStops null = 위치 확인 중"
       parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
       responses:
-        "200": { description: "{ phase, legIndex, remainingStops, currentStop, eventStop, realtimeAvailable, fetchedAt }" }
+        "200": { description: "{ phase, legIndex, remainingStops, currentStop, eventStop, realtimeAvailable, lastSeenAt, fetchedAt } — lastSeenAt은 마지막 목격 시각(null 가능), 특정 후 두절 시 'N분 전 기준' 표시용" }
         "404": { description: "없는 트립 (NOT_FOUND)" }
     delete:
       tags: [journeys]
@@ -596,7 +596,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/TripStartLocation" }
       responses:
-        "200": { description: "초기화된 트립 상태 (phase TRACKING, remainingStops·currentStop null)" }
+        "200": { description: "초기화된 트립 상태 (phase TRACKING, remainingStops·currentStop·lastSeenAt null)" }
         "400": { description: "환승 대기·완료 상태이거나 구간당 3회를 넘겼다 (INVALID_REQUEST)" }
         "404": { description: "존재하지 않는 트립" }
 
