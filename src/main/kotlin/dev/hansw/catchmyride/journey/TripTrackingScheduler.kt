@@ -31,6 +31,8 @@ import java.time.LocalDateTime
  *   구간의 진행 방면(UP/DOWN)을 판정하고, 후보 수집·특정·노선 목격을 그 방면으로만 좁힌다. 판정 전엔
  *   방면 필터 없이 자기선택으로 강등하되 단일 후보 위치 표시는 하지 않는다(반대 방면 열차를 보여줬던 사고).
  *   판정되는 순간 후보를 그 방면으로 다시 잡고, 특정 전엔 매 틱 탑승역에서 후보를 보태 늦게 시작한 트립도 흡수한다
+ * - 유저가 "내가 탄 열차가 아니에요"로 물린 열차(rejectedTrains)는 후보에 다시 넣지 않는다 —
+ *   안 그러면 다시 잡기(§9-3)가 방금 물린 열차를 그대로 재특정한다 (2026-09-30 오너 요청)
  * - 중간 시작(seedStop != null, 위치로 잡은 트립)은 탑승역 전광판을 후보로 쓰지 않는다 —
  *   유저가 이미 지난 역이라 거기 있는 건 뒤차다 (2026-09-24 오너 제보: 출발지·목적지 사이에서
  *   시작하면 열차를 못 잡았다). 후보가 비었을 때만 위치 역 주변에서 60초 안에 다시 잡는다
@@ -140,7 +142,8 @@ class TripTrackingScheduler(
                 tracked.seedStop != null ->
                     dropWrongHeading((tracked.candidates + seeded).distinct(), tracked.heading, onLine(leg.line, lineSnapshots))
                 else -> seeded
-            }
+                // 유저가 "내가 탄 열차가 아니에요"로 물린 열차는 어느 경로로도 다시 들어오지 않는다 (§9-3)
+            }.withoutRejected(tracked.rejectedTrains)
             if (candidates != tracked.candidates) {
                 tracked = tracked.copy(candidates = candidates)
                 log.info("후보 갱신 — trip={} 후보={}대 방면={}", tracked.tripId, candidates.size, tracked.heading)
@@ -276,7 +279,9 @@ class TripTrackingScheduler(
         lineSnapshots: MutableMap<String, List<LineTrain>>,
     ): List<String> {
         val seedStop = trip.seedStop ?: return emptyList()
-        return riding.candidatesAround(leg, seedStop, trip.heading, onLine(leg.line, lineSnapshots))
+        return riding
+            .candidatesAround(leg, seedStop, trip.heading, onLine(leg.line, lineSnapshots))
+            .withoutRejected(trip.rejectedTrains)
     }
 
     /** 방면이 뒤늦게 정해졌을 때 — 반대 방면으로 목격된 후보만 쳐낸다 (모르는 열차는 남긴다, NFR-03) */

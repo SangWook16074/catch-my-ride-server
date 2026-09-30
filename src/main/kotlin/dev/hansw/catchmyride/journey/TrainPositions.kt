@@ -178,6 +178,18 @@ fun boardingCandidates(approaching: List<ApproachingTrain>, legLine: String, hea
         .distinct()
 
 /**
+ * 유저가 "내가 탄 열차가 아니에요"로 물린 열차를 후보에서 뺀다 (§9-3 다시 잡기, 2026-09-30).
+ * 두 피드의 표기 차이를 흡수해 비교한다 — 안 그러면 선행 0 하나로 물린 열차가 다시 들어온다
+ */
+fun List<String>.withoutRejected(rejected: List<String>): List<String> {
+    if (rejected.isEmpty()) {
+        return this
+    }
+    val keys = rejected.map(::trainNoKey).toSet()
+    return filterNot { trainNoKey(it) in keys }
+}
+
+/**
  * 상류 두 피드의 열차 번호 표기 차이(선행 0 등)를 흡수한 비교 키 —
  * 전광판 btrainNo와 노선 위치 trainNo가 같은 열차인지 볼 때 항상 이걸로 비교한다
  */

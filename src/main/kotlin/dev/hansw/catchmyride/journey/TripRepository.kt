@@ -17,6 +17,12 @@ data class Trip(
     val btrainNo: String?,
     val candidates: List<String>,
     /**
+     * 유저가 "내가 탄 열차가 아니에요"로 물린 열차 번호들 (§9-3 다시 잡기, 2026-09-30 오너 요청) —
+     * 다시 잡을 때 이 열차는 후보에서 뺀다. 안 그러면 방금 물린 열차를 그대로 다시 특정한다.
+     * 구간이 바뀌면(환승) 비운다 — 다른 노선의 열차 번호와 섞을 이유가 없다
+     */
+    val rejectedTrains: List<String> = emptyList(),
+    /**
      * 구간 중간에서 시작한 트립의 **유저 탑승 위치 역** — 위치(§9-2)로 판정됐을 때만 채워진다.
      * null = 탑승역에서 시작(기존 경로). 채워져 있으면 후보 재수집을 탑승역 전광판에서 하지
      * 않는다 — 그건 유저 뒤에 오는 열차다 (2026-09-24)
@@ -67,10 +73,10 @@ class TripRepository(
         jdbc.sql(
             """
             INSERT INTO trip (trip_id, user_key, journey_id, legs_json, leg_index, phase, btrain_no,
-                              candidates_json, seed_stop, heading, remaining_stops, current_stop, realtime_available,
+                              candidates_json, rejected_trains_json, seed_stop, heading, remaining_stops, current_stop, realtime_available,
                               leg_started_at, last_seen_at, started_at, updated_at)
             VALUES (:tripId, :userKey, :journeyId, :legs, :legIndex, :phase, :btrainNo,
-                    :candidates, :seedStop, :heading, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
+                    :candidates, :rejected, :seedStop, :heading, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
             """.trimIndent(),
         )
             .param("tripId", trip.tripId)
@@ -81,6 +87,7 @@ class TripRepository(
             .param("phase", trip.phase.name)
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
+            .param("rejected", objectMapper.writeValueAsString(trip.rejectedTrains))
             .param("seedStop", trip.seedStop)
             .param("heading", trip.heading?.name)
             .param("remaining", trip.remainingStops)
@@ -97,7 +104,8 @@ class TripRepository(
         jdbc.sql(
             """
             UPDATE trip SET leg_index = :legIndex, phase = :phase, btrain_no = :btrainNo,
-                            candidates_json = :candidates, seed_stop = :seedStop, heading = :heading, remaining_stops = :remaining,
+                            candidates_json = :candidates, rejected_trains_json = :rejected, seed_stop = :seedStop,
+                            heading = :heading, remaining_stops = :remaining,
                             current_stop = :currentStop, realtime_available = :realtime,
                             leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt, updated_at = :now
             WHERE trip_id = :tripId
@@ -108,6 +116,7 @@ class TripRepository(
             .param("phase", trip.phase.name)
             .param("btrainNo", trip.btrainNo)
             .param("candidates", objectMapper.writeValueAsString(trip.candidates))
+            .param("rejected", objectMapper.writeValueAsString(trip.rejectedTrains))
             .param("seedStop", trip.seedStop)
             .param("heading", trip.heading?.name)
             .param("remaining", trip.remainingStops)
@@ -163,6 +172,18 @@ class TripRepository(
             .update()
     }
 
+    /**
+     * 이 구간의 발송 기록 삭제 — **유저가 "내가 탄 열차가 아니에요"를 누른 경우에만** 쓴다.
+     * 잘못 잡은 열차로 나간 예고·하차 알림은 무효라, 제대로 잡은 뒤 다시 2회까지 보낼 수 있어야 한다
+     * (FR-704의 "이벤트당 2회"는 유지 — 유저가 직접 리셋한 이벤트에 한해 다시 센다, 2026-09-30)
+     */
+    fun clearPushLog(tripId: String, legIndex: Int) {
+        jdbc.sql("DELETE FROM trip_push_log WHERE trip_id = :tripId AND leg_index = :legIndex")
+            .param("tripId", tripId)
+            .param("legIndex", legIndex)
+            .update()
+    }
+
     fun rollbackPush(tripId: String, legIndex: Int, stage: TripPushStage) {
         jdbc.sql(
             "DELETE FROM trip_push_log WHERE trip_id = :tripId AND leg_index = :legIndex AND stage = :stage",
@@ -182,6 +203,10 @@ class TripRepository(
         phase = TripPhase.valueOf(rs.getString("phase")),
         btrainNo = rs.getString("btrain_no"),
         candidates = objectMapper.readValue(rs.getString("candidates_json"), Array<String>::class.java).toList(),
+        rejectedTrains = rs.getString("rejected_trains_json")
+            ?.let { objectMapper.readValue(it, Array<String>::class.java).toList() }
+            .orEmpty(), // 2026-09-30 이전 트립은 null
+
         seedStop = rs.getString("seed_stop"),
         heading = rs.getString("heading")?.let { Heading.valueOf(it) },
         remainingStops = rs.getObject("remaining_stops")?.let { (it as Number).toInt() },

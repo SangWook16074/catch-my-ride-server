@@ -371,6 +371,32 @@ class TripTrackingSchedulerTest {
         assertEquals(2, trips.find("trip-1")!!.remainingStops)
     }
 
+    @Test
+    fun `다시 잡기로 물린 열차는 하차역에 나타나도 재특정하지 않는다`() {
+        // §9-3 다시 잡기(2026-09-30): 유저가 "내가 탄 열차가 아니에요"를 누른 열차가 하차역 전광판에
+        // 계속 보인다고 다시 잡으면 되돌리기가 무의미해진다
+        val now = LocalDateTime.now(clock)
+        trips.insert(
+            Trip(
+                tripId = "trip-1", userKey = "dev-user", journeyId = null, legs = line3Legs,
+                legIndex = 0, phase = TripPhase.TRACKING, btrainNo = null, candidates = emptyList(),
+                rejectedTrains = listOf("3399"), heading = Heading.DOWN, remainingStops = null,
+                realtimeAvailable = true, legStartedAt = now, lastSeenAt = null, startedAt = now,
+            ),
+            now,
+        )
+        // 탑승역·하차역 모두 물린 열차뿐 — 후보 재수집에도, 특정에도 쓰이지 않아야 한다
+        trains["충무로"] = listOf(line3Row("3399", "충무로", 1003000331, Heading.DOWN, arvlCd = "1"))
+        trains["교대"] = listOf(line3Row("3399", "교대", 1003000340, Heading.DOWN, message = "[2]번째 전역"))
+
+        scheduler().tick()
+
+        val saved = trips.find("trip-1")!!
+        assertTrue(saved.candidates.isEmpty())
+        assertNull(saved.btrainNo)
+        assertNull(saved.remainingStops)
+    }
+
     // --- 위치 기반 "중간 시작" (2026-09-24 오너 제보: 출발지를 지나 시작하면 뒤차를 잡았다) ---
 
     private fun ridingTrip(now: LocalDateTime, candidates: List<String>) = Trip(

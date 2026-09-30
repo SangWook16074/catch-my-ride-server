@@ -163,6 +163,7 @@ class TripController(
             candidates = seed.candidates,
             seedStop = seed.seedStop,
             heading = seed.heading, // 새 구간 — 방면도 새로 판정 (환승 후 반대 방면 문제의 핵심)
+            rejectedTrains = emptyList(), // 새 구간 — 이전 구간에서 물린 열차 번호를 이월하지 않는다
             remainingStops = null,
             currentStop = null, // 새 구간 — 이전 구간의 위치 역명을 이월하지 않는다
             realtimeAvailable = true,
@@ -176,6 +177,68 @@ class TripController(
             remainingStops = null,
             currentStop = null,
             eventStop = nextLeg.alightStop,
+            realtimeAvailable = true,
+            fetchedAt = now.format(ISO),
+        )
+    }
+
+    /**
+     * "내가 탄 열차가 아니에요" — 이 구간을 **다시 잡는다** (§9-3, 오너 요청 2026-09-30).
+     *
+     * 서버가 유저 뒤차·앞차를 특정하면 카운트다운과 하차 알림이 유저 열차와 어긋난다. 유저는 화면의
+     * "현재 ○○ 부근"으로 그걸 제일 먼저 알아채므로, 그 자리에서 다시 잡게 해 준다 — 트립을 버리고
+     * 새로 시작하면 여정·저장 흐름을 다시 타야 하고 1회성 구간은 날아간다.
+     *
+     * 규칙: 물린 열차는 [Trip.rejectedTrains]에 적어 후보에서 빼고(안 그러면 그대로 다시 잡힌다),
+     * 위치를 새로 받아 "지금 있는 역" 기준으로 후보를 다시 만든다(§9-2 중간 시작과 같은 규칙 —
+     * 이미 몇 정거장 갔을 테니 탑승역 전광판은 더 못 쓴다). 이 구간의 발송 기록은 지운다 —
+     * 잘못 잡은 열차로 나간 예고는 무효이고, 제대로 잡은 뒤 FR-704의 2회를 다시 쓴다.
+     * 물릴 수 있는 횟수는 구간당 [MAX_REJECTED]회 — 무한히 되돌리며 푸시를 다시 여는 길을 막는다
+     * (2026-09-10 폭주 사고 교훈). 환승 대기·완료 상태에서는 400 (그건 `next-leg`·재시작의 일이다)
+     */
+    @PostMapping("/api/v1/trips/{tripId}/re-identify")
+    fun reIdentify(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @PathVariable tripId: String,
+        @RequestBody(required = false) request: StartRequest?,
+    ): StatusResponse {
+        val trip = findOwned(auth, tripId)
+        if (trip.phase == TripPhase.TRANSFER || trip.phase == TripPhase.DONE) {
+            throw ApiException.invalidRequest("추적 중인 구간이 아닙니다")
+        }
+        if (trip.rejectedTrains.size >= MAX_REJECTED) {
+            throw ApiException.invalidRequest("열차를 너무 여러 번 다시 잡았어요. 트립을 다시 시작해주세요")
+        }
+        val now = LocalDateTime.now(clock)
+        val leg = trip.currentLeg
+        val rejected = (trip.rejectedTrains + listOfNotNull(trip.btrainNo)).distinct()
+        val seed = seedLeg(leg, request?.location, rejected)
+        val reset = trip.copy(
+            phase = TripPhase.TRACKING,
+            btrainNo = null,
+            candidates = seed.candidates,
+            seedStop = seed.seedStop,
+            // 방면은 같은 구간이라 그대로 — 재판정이 실패했다고 아는 값을 버리지 않는다
+            heading = seed.heading ?: trip.heading,
+            rejectedTrains = rejected,
+            remainingStops = null,
+            currentStop = null,
+            realtimeAvailable = true,
+            legStartedAt = now, // 특정 타임아웃·중간 시작 재수집 창을 지금부터 다시 센다
+            lastSeenAt = null,
+        )
+        trips.save(reset, now)
+        trips.clearPushLog(trip.tripId, trip.legIndex)
+        log.info(
+            "열차 다시 잡기 — trip={} leg={} 물린열차={} 후보={}대 위치역={}",
+            trip.tripId, trip.legIndex, rejected, seed.candidates.size, seed.seedStop,
+        )
+        return StatusResponse(
+            phase = reset.phase.name,
+            legIndex = reset.legIndex,
+            remainingStops = null,
+            currentStop = null,
+            eventStop = leg.alightStop,
             realtimeAvailable = true,
             fetchedAt = now.format(ISO),
         )
@@ -213,7 +276,7 @@ class TripController(
      * 후보: 탑승역에서 지금 도착·출발 중인 열차 중 그 방면 — 하차역 목록에 이 중 하나가 나타나면 우리 열차.
      * 상류 실패·빈 전광판이면 빈 후보/미판정 — 추적 엔진이 매 틱 재시도한다 (2026-09-16 저녁 실측 개정)
      */
-    private fun seedLeg(leg: JourneyLeg, location: LocationRequest?): LegSeed {
+    private fun seedLeg(leg: JourneyLeg, location: LocationRequest?, rejected: List<String> = emptyList()): LegSeed {
         val boardRows = try {
             trains.approaching(leg.boardStop).also(stationIds::learn)
         } catch (e: Exception) {
@@ -236,8 +299,8 @@ class TripController(
         if (heading == null) {
             log.info("방면 미판정(시작) — {}→{} {}: 추적 엔진이 재시도", leg.boardStop, leg.alightStop, leg.line)
         }
-        ridingSeed(leg, location, heading)?.let { return it }
-        return LegSeed(heading, boardingCandidates(boardRows, leg.line, heading), seedStop = null)
+        ridingSeed(leg, location, heading, rejected)?.let { return it }
+        return LegSeed(heading, boardingCandidates(boardRows, leg.line, heading).withoutRejected(rejected), seedStop = null)
     }
 
     /**
@@ -248,13 +311,18 @@ class TripController(
      * 지나간 뒤에 온다(제보된 버그). 후보가 0대로 나와도 **위치 역을 기억한 채** 돌려준다:
      * 추적 엔진이 60초 창 안에서 같은 규칙으로 다시 잡고, 못 잡으면 뒤차를 따라가느니 LOST다 (FR-706)
      */
-    private fun ridingSeed(leg: JourneyLeg, location: LocationRequest?, heading: Heading?): LegSeed? {
+    private fun ridingSeed(
+        leg: JourneyLeg,
+        location: LocationRequest?,
+        heading: Heading?,
+        rejected: List<String>,
+    ): LegSeed? {
         val fix = location?.toFix() ?: return null
         // 노선 위치를 먼저 받는다 — 후보의 유일한 출처이고, 역명→역 id 학습(구간 안 판정)도 여기서 채워진다
         val lineTrains = runCatching { trains.onLine(lineBase(leg.line)) }.getOrElse { emptyList() }
             .also { stationIds.learn(lineBase(leg.line), it) }
         val here = riding.locate(leg, fix) ?: return null
-        val candidates = riding.candidatesNear(leg, fix, heading, lineTrains)
+        val candidates = riding.candidatesNear(leg, fix, heading, lineTrains).withoutRejected(rejected)
         if (candidates.isEmpty() && lineTrains.isNotEmpty()) {
             // 노선에 열차는 도는데 유저 주변 구간 안에 한 대도 없다 = 아직 탄 게 아니다(집·역 밖·엉뚱한 좌표).
             // 이때만 좌표를 버리고 탑승역 시드로 돌아간다 — 멀쩡한 "타기 전 시작"을 LOST로 만들지 않는다.
@@ -279,5 +347,8 @@ class TripController(
 
     companion object {
         private val ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME
+
+        /** 한 구간에서 "내가 탄 열차가 아니에요"를 받아 줄 횟수 — 넘으면 다시 시작이 맞다 */
+        private const val MAX_REJECTED = 3
     }
 }
