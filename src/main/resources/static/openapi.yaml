@@ -531,8 +531,13 @@ paths:
   /api/v1/journeys/{journeyId}/trips:
     post:
       tags: [journeys]
-      summary: "§9-2 트립 시작 (유저 수동, 동시 1개)"
+      summary: "§9-2 트립 시작 (유저 수동, 동시 1개). location(선택)을 주면 이미 탄 상태의 '중간 시작'을 위치로 잡는다"
       parameters: [{ name: journeyId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TripStartLocation" }
       responses:
         "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
         "400": { description: "진행 중 트립 존재 (메시지에 기존 tripId)" }
@@ -560,6 +565,8 @@ paths:
                       line: { type: string, example: "9호선 급행" }
                       boardStop: { type: string, example: "여의도" }
                       alightStop: { type: string, example: "당산" }
+                location:
+                  $ref: "#/components/schemas/TripStartLocationValue"
       responses:
         "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
         "400": { description: "구간 검증 실패 또는 진행 중 트립 존재 (메시지에 기존 tripId)" }
@@ -580,13 +587,37 @@ paths:
   /api/v1/trips/{tripId}/next-leg:
     post:
       tags: [journeys]
-      summary: "§9-3 환승 후 다음 구간 수동 재개 (TRANSFER에서만)"
+      summary: "§9-3 환승 후 다음 구간 수동 재개 (TRANSFER에서만). location(선택)은 시작과 같은 규칙"
       parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TripStartLocation" }
       responses:
         "200": { description: "재개된 트립 상태" }
         "400": { description: "TRANSFER가 아님 (INVALID_REQUEST)" }
 
 components:
+  schemas:
+    TripStartLocation:
+      type: object
+      description: "§9-2 위치 기반 중간 시작 — 시작 시점 좌표 1회(저장하지 않음). 없으면 탑승역 전광판 시드로 강등"
+      properties:
+        location:
+          $ref: "#/components/schemas/TripStartLocationValue"
+    TripStartLocationValue:
+      type: object
+      description: >-
+        유저 좌표 — 탑승역에서 오차 반경보다 확실히 멀면 '이미 탄 상태'로 보고, 좌표에서 가장 가까운
+        (구간 안·우리 방면) 열차를 후보로 잡는다. 오차 2.5km 초과·측위 90초 초과·구간 밖이면 무시하고
+        탑승역 전광판 시드로 강등한다 (2026-09-29 개정)
+      required: [lat, lng]
+      properties:
+        lat: { type: number, format: double, example: 37.613292 }
+        lng: { type: number, format: double, example: 127.030053 }
+        accuracy: { type: number, format: double, description: "측위 오차 반경(m) — 선택. 2500 초과면 무시", example: 30 }
+        ageSeconds: { type: integer, description: "이 좌표를 딴 뒤 흐른 시간(초) — 선택. 90 초과면 무시(달리는 열차에선 뒤차를 고르게 된다)", example: 3 }
   securitySchemes:
     tossBearer:
       type: http

@@ -2,7 +2,9 @@ package dev.hansw.catchmyride.journey
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * 방면 판정(Heading.kt) 명세 — 2026-09-21 실측 응답 기준:
@@ -71,5 +73,25 @@ class HeadingTest {
         assertEquals(Heading.DOWN, headingOf("1"))
         assertNull(headingOf(null))
         assertNull(headingOf("?"))
+    }
+
+    // --- 위치 기반 "중간 시작" 판정 (2026-09-24, 오너 제보: 출발지를 지나 시작하면 뒤차를 잡았다) ---
+
+    @Test
+    fun `충무로→교대에서 약수는 구간 사이, 을지로3가는 아니다`() {
+        val chungmuro = 1003000331L
+        val gyodae = 1003000340L
+        assertTrue(isOnWay("3호선", chungmuro, 1003000334, gyodae))      // 약수 — 탄 뒤 지나는 역
+        assertFalse(isOnWay("3호선", chungmuro, 1003000330, gyodae))     // 을지로3가 — 탑승역 뒤(반대쪽)
+        assertFalse(isOnWay("3호선", chungmuro, chungmuro, gyodae))      // 탑승역 자신 = 기존 시작
+        assertFalse(isOnWay("3호선", chungmuro, gyodae, gyodae))         // 하차역 = 이미 도착
+        assertFalse(isOnWay("3호선", chungmuro, 1003000345, gyodae))     // 하차역 너머
+    }
+
+    @Test
+    fun `2호선 순환선은 짧은 쪽으로 돌고 201↔243을 넘어간다`() {
+        // 시청(243)에서 을지로입구(203) 방면이면 201(시청 다음)은 구간 사이다
+        assertTrue(isOnWay("2호선", 1002000243, 1002000201, 1002000203))
+        assertFalse(isOnWay("2호선", 1002000243, 1002000240, 1002000203)) // 반대쪽(먼 쪽)
     }
 }

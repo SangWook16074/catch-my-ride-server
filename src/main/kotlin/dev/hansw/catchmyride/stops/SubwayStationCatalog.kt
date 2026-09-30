@@ -1,6 +1,7 @@
 package dev.hansw.catchmyride.stops
 
 import dev.hansw.catchmyride.spike.adapter.asItemList
+import dev.hansw.catchmyride.spike.adapter.textOrNull
 import org.springframework.core.io.ClassPathResource
 import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
@@ -8,12 +9,20 @@ import tools.jackson.databind.ObjectMapper
 /**
  * 수도권 지하철 역 목록 — 서버 내장 정적 데이터 (API.md §5: 역 수가 유한해 실시간 API 불필요).
  * 원천: 서울열린데이터광장 SearchSTNBySubwayLineInfo (2026-08-28 기준 655역, GTX-A·신분당선 등 포함).
- * 노선 개편 시 갱신: 같은 API를 다시 받아 data/subway-stations.json 교체.
+ * 좌표(lat/lng)는 같은 곳의 subwayStationMaster(역사마스터, BLDN_NM·LAT·LOT)를 역명으로 합친 값 —
+ * 같은 역명이 여러 노선에 있으면 평균(§9-2 "중간 시작" 판정용, 역간 거리 대비 오차가 작다).
+ * 마스터에 없는 신설역 7개는 좌표 null — 위치 기반 판정에서 조용히 빠진다 (NFR-03).
+ * 노선 개편 시 갱신: 두 API를 다시 받아 data/subway-stations.json 교체.
  */
 @Component
 class SubwayStationCatalog(objectMapper: ObjectMapper) {
 
-    data class Station(val name: String, val lines: List<String>) {
+    data class Station(
+        val name: String,
+        val lines: List<String>,
+        val lat: Double? = null,
+        val lng: Double? = null,
+    ) {
         /** 화면 표시명 — "서울역"처럼 원래 '역'으로 끝나는 이름엔 다시 붙이지 않는다 */
         val displayName: String = if (name.endsWith("역")) name else "${name}역"
     }
@@ -24,6 +33,8 @@ class SubwayStationCatalog(objectMapper: ObjectMapper) {
                 Station(
                     name = node.path("name").asString(),
                     lines = node.path("lines").asItemList().map { it.asString() },
+                    lat = node.textOrNull("lat")?.toDoubleOrNull(),
+                    lng = node.textOrNull("lng")?.toDoubleOrNull(),
                 )
             }
         }
@@ -64,7 +75,53 @@ class SubwayStationCatalog(objectMapper: ObjectMapper) {
             }
         }
 
+    /**
+     * 해당 노선에서 좌표가 가장 가까운 역 — §9-2 "중간 시작"(이미 탄 뒤 하차 알림 시작) 판정용.
+     * 반경 밖·좌표 미보유·노선 불일치면 null — 모르면 위치 없이 시작한 것과 같게 강등한다 (NFR-03).
+     */
+    fun nearest(line: String, lat: Double, lng: Double, withinMeters: Double): String? =
+        stations.asSequence()
+            .filter { station -> station.lines.any { it == line } }
+            .mapNotNull { station ->
+                val sLat = station.lat ?: return@mapNotNull null
+                val sLng = station.lng ?: return@mapNotNull null
+                station.name to distanceMeters(lat, lng, sLat, sLng)
+            }
+            .filter { it.second <= withinMeters }
+            .minByOrNull { it.second }
+            ?.first
+
+    /** 그 노선 역의 좌표 — 없으면 null (§9-2 재수집 기준점) */
+    fun coordinatesOf(line: String, stationName: String): Pair<Double, Double>? {
+        val station = stations.firstOrNull { it.name == stationName && it.lines.any { l -> l == line } } ?: return null
+        val lat = station.lat ?: return null
+        val lng = station.lng ?: return null
+        return lat to lng
+    }
+
+    /**
+     * 그 노선의 특정 역과 좌표 사이 거리(m) — §9-2 "중간 시작"에서 (1) 유저가 탑승역에서
+     * 확실히 멀어졌는지, (2) 노선 위치 피드의 열차가 유저 근처인지 재는 데 쓴다.
+     * 역명을 모르거나 좌표가 없으면 null — 모르면 위치를 쓰지 않는다 (NFR-03).
+     */
+    fun distanceTo(line: String, stationName: String, lat: Double, lng: Double): Double? {
+        val station = stations.firstOrNull { it.name == stationName && it.lines.any { l -> l == line } } ?: return null
+        val sLat = station.lat ?: return null
+        val sLng = station.lng ?: return null
+        return distanceMeters(lat, lng, sLat, sLng)
+    }
+
     companion object {
+        /** 하버사인 거리(m) — 역 간 비교에만 쓰므로 구면 근사로 충분하다 */
+        fun distanceMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+            val dLat = Math.toRadians(lat2 - lat1)
+            val dLng = Math.toRadians(lng2 - lng1)
+            val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLng / 2) * Math.sin(dLng / 2)
+            return 2 * 6_371_000.0 * Math.asin(Math.min(1.0, Math.sqrt(a)))
+        }
+
         /** 실시간 API(btrainSttus)가 급행/특급을 실제로 구분해 주는 노선들 */
         private val EXPRESS_CAPABLE_LINES =
             setOf("1호선", "9호선", "경의선", "공항철도", "수인분당선", "경춘선", "서해선")

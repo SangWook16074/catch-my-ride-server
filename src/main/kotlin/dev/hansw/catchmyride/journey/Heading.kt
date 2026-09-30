@@ -109,3 +109,23 @@ class StationIdCache {
 
     private fun key(line: String, station: String) = "${lineBase(line)}|${station.trim()}"
 }
+
+/**
+ * 어떤 역(midId)이 탑승역→하차역 진행 방향에서 **둘 사이**인지 — §9-2 "중간 시작" 판정.
+ * 두 곳에서 쓴다: 유저 위치 역이 구간 안인지, 그리고 노선 위치 피드의 **열차가 구간 안인지**
+ * (탑승역에 있는 뒤차가 여기서 걸린다 — 2026-09-29).
+ * 탑승역 자신·하차역 이후·반대쪽·본선↔지선 조합은 false(위치를 쓰지 않고 기존 시작으로 강등).
+ */
+fun isOnWay(legLine: String, boardId: Long, midId: Long, alightId: Long): Boolean {
+    val line = lineBase(legLine)
+    val sign = travelSign(line, boardId, alightId) ?: return false
+    if (onLoop(line, boardId) != onLoop(line, midId) || onLoop(line, boardId) != onLoop(line, alightId)) {
+        return false
+    }
+    if (onLoop(line, boardId)) {
+        val passed = Math.floorMod((ordinal(midId) - ordinal(boardId)) * sign, LOOP_SIZE)
+        val total = Math.floorMod((ordinal(alightId) - ordinal(boardId)) * sign, LOOP_SIZE)
+        return passed in 1 until total
+    }
+    return (midId - boardId) * sign > 0 && (alightId - midId) * sign > 0
+}

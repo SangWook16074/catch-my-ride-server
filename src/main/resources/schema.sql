@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS trip (
     phase              VARCHAR(16) NOT NULL, -- TRACKING | ARRIVING | TRANSFER | DONE | LOST
     btrain_no          VARCHAR(16),          -- 특정된 열차 번호 (null = 위치 확인 중)
     candidates_json    TEXT NOT NULL,        -- 탑승역에서 잡은 후보 열차 번호들
+    seed_stop          VARCHAR(64),          -- 중간 시작 시 유저 탑승 위치 역 (null = 탑승역에서 시작) — 2026-09-24
     heading            VARCHAR(8),           -- 구간 진행 방면 UP/DOWN (서버 판정, null = 미판정) — 2026-09-21
     remaining_stops    INT,                  -- 이벤트 역까지 남은 정거장 (null = 미확인/LOST)
     current_stop       VARCHAR(64),          -- 열차 현재 위치 역명(상류 arvlMsg3, null = 모름) — §9-3 currentStop
@@ -126,6 +127,8 @@ ALTER TABLE trip ADD COLUMN IF NOT EXISTS current_stop VARCHAR(64);
 ALTER TABLE trip ALTER COLUMN journey_id DROP NOT NULL;
 -- 2026-09-21 마이그레이션 — 구간 진행 방면 (QA: 충무로→교대 반대 방면 추적)
 ALTER TABLE trip ADD COLUMN IF NOT EXISTS heading VARCHAR(8);
+-- 2026-09-24 마이그레이션 — 위치 기반 중간 시작 (오너 제보: 출발지를 지나 시작하면 뒤차를 잡았다)
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS seed_stop VARCHAR(64);
 
 -- FR-704 이벤트(구간 하차)당 최대 2회(PRE·ALIGHT) — PK가 중복 발송을 구조적으로 막는다 (push_log와 동일 설계)
 CREATE TABLE IF NOT EXISTS trip_push_log (

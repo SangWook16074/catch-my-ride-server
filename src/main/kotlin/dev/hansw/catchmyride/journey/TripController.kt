@@ -27,6 +27,7 @@ class TripController(
     private val journeys: JourneyRepository,
     private val trains: TrainPositions,
     private val stationIds: StationIdCache,
+    private val riding: RidingSeedResolver,
     private val legValidator: JourneyLegValidator,
     private val userKeys: UserKeyResolver,
     private val clock: Clock,
@@ -35,7 +36,21 @@ class TripController(
     private val log = LoggerFactory.getLogger(javaClass)
 
     data class StartResponse(val tripId: String, val startedAt: String)
-    data class QuickStartRequest(val legs: List<LegRequest>?)
+
+    /**
+     * 시작 시점 유저 위치(선택) — §9-2 "중간 시작". 이미 탄 상태로 시작하면 탑승역 전광판에는
+     * 유저 뒤에 오는 열차만 있어 잘못 잡힌다(2026-09-24 오너 제보). 권한 거부·실내 측위 실패는
+     * 그냥 없이 보낸다 — 서버는 기존 동작으로 강등한다 (NFR-03·NFR-05: 상시 추적 아님, 시작 1회)
+     */
+    data class LocationRequest(
+        val lat: Double?,
+        val lng: Double?,
+        val accuracy: Double?,
+        /** 이 좌표를 딴 뒤 흐른 시간(초, 선택) — 낡은 좌표는 뒤차를 고르게 해서 버린다 (2026-09-29) */
+        val ageSeconds: Long? = null,
+    )
+    data class StartRequest(val location: LocationRequest?)
+    data class QuickStartRequest(val legs: List<LegRequest>?, val location: LocationRequest? = null)
     data class StatusResponse(
         val phase: String,
         val legIndex: Int,
@@ -51,10 +66,11 @@ class TripController(
     fun start(
         @RequestHeader(value = "Authorization", required = false) auth: String?,
         @PathVariable journeyId: String,
+        @RequestBody(required = false) request: StartRequest?,
     ): StartResponse {
         val userKey = userKeys.resolve(auth)
         val journey = journeys.find(userKey, journeyId) ?: throw ApiException.settingNotFound()
-        val trip = startTrip(userKey, journeyId = journeyId, legs = journey.legs)
+        val trip = startTrip(userKey, journeyId = journeyId, legs = journey.legs, location = request?.location)
         journeys.touchLastUsed(userKey, journeyId, trip.startedAt) // 히스토리 정렬 키 (§9-2)
         return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
     }
@@ -72,16 +88,21 @@ class TripController(
     ): StartResponse {
         val userKey = userKeys.resolve(auth)
         val legs = legValidator.validate(request.legs)
-        val trip = startTrip(userKey, journeyId = null, legs = legs)
+        val trip = startTrip(userKey, journeyId = null, legs = legs, location = request.location)
         return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
     }
 
-    private fun startTrip(userKey: String, journeyId: String?, legs: List<JourneyLeg>): Trip {
+    private fun startTrip(
+        userKey: String,
+        journeyId: String?,
+        legs: List<JourneyLeg>,
+        location: LocationRequest?,
+    ): Trip {
         trips.findByUser(userKey)?.let {
             throw ApiException.invalidRequest("진행 중인 트립이 있습니다: ${it.tripId}")
         }
         val now = LocalDateTime.now(clock)
-        val seed = seedLeg(legs.first())
+        val seed = seedLeg(legs.first(), location)
         val trip = Trip(
             tripId = UUID.randomUUID().toString(),
             userKey = userKey,
@@ -91,6 +112,7 @@ class TripController(
             phase = TripPhase.TRACKING,
             btrainNo = null,
             candidates = seed.candidates,
+            seedStop = seed.seedStop,
             heading = seed.heading,
             remainingStops = null,
             realtimeAvailable = true,
@@ -124,6 +146,7 @@ class TripController(
     fun nextLeg(
         @RequestHeader(value = "Authorization", required = false) auth: String?,
         @PathVariable tripId: String,
+        @RequestBody(required = false) request: StartRequest?,
     ): StatusResponse {
         val trip = findOwned(auth, tripId)
         if (trip.phase != TripPhase.TRANSFER) {
@@ -132,12 +155,13 @@ class TripController(
         val now = LocalDateTime.now(clock)
         val nextIndex = trip.legIndex + 1
         val nextLeg = trip.legs[nextIndex]
-        val seed = seedLeg(nextLeg)
+        val seed = seedLeg(nextLeg, request?.location)
         val resumed = trip.copy(
             legIndex = nextIndex,
             phase = TripPhase.TRACKING,
             btrainNo = null,
             candidates = seed.candidates,
+            seedStop = seed.seedStop,
             heading = seed.heading, // 새 구간 — 방면도 새로 판정 (환승 후 반대 방면 문제의 핵심)
             remainingStops = null,
             currentStop = null, // 새 구간 — 이전 구간의 위치 역명을 이월하지 않는다
@@ -180,7 +204,7 @@ class TripController(
         return trip
     }
 
-    private data class LegSeed(val heading: Heading?, val candidates: List<String>)
+    private data class LegSeed(val heading: Heading?, val candidates: List<String>, val seedStop: String?)
 
     /**
      * 구간 시작 시드 — 방면 판정 + 탑승 후보.
@@ -189,7 +213,7 @@ class TripController(
      * 후보: 탑승역에서 지금 도착·출발 중인 열차 중 그 방면 — 하차역 목록에 이 중 하나가 나타나면 우리 열차.
      * 상류 실패·빈 전광판이면 빈 후보/미판정 — 추적 엔진이 매 틱 재시도한다 (2026-09-16 저녁 실측 개정)
      */
-    private fun seedLeg(leg: JourneyLeg): LegSeed {
+    private fun seedLeg(leg: JourneyLeg, location: LocationRequest?): LegSeed {
         val boardRows = try {
             trains.approaching(leg.boardStop).also(stationIds::learn)
         } catch (e: Exception) {
@@ -212,7 +236,45 @@ class TripController(
         if (heading == null) {
             log.info("방면 미판정(시작) — {}→{} {}: 추적 엔진이 재시도", leg.boardStop, leg.alightStop, leg.line)
         }
-        return LegSeed(heading, boardingCandidates(boardRows, leg.line, heading))
+        ridingSeed(leg, location, heading)?.let { return it }
+        return LegSeed(heading, boardingCandidates(boardRows, leg.line, heading), seedStop = null)
+    }
+
+    /**
+     * 위치 기반 "중간 시작" 시드 (오너 결정 2026-09-24, 규칙 개정 2026-09-29) — 유저가 탑승역을
+     * 이미 지나 **탄 상태**로 시작한 경우. 판정·후보 규칙은 RidingSeedResolver가 들고 있다.
+     *
+     * 이 경우 탑승역 전광판은 쓰지 않는다 — 거기 있는 건 유저 뒤에 오는 열차라 하차 푸시가
+     * 지나간 뒤에 온다(제보된 버그). 후보가 0대로 나와도 **위치 역을 기억한 채** 돌려준다:
+     * 추적 엔진이 60초 창 안에서 같은 규칙으로 다시 잡고, 못 잡으면 뒤차를 따라가느니 LOST다 (FR-706)
+     */
+    private fun ridingSeed(leg: JourneyLeg, location: LocationRequest?, heading: Heading?): LegSeed? {
+        val fix = location?.toFix() ?: return null
+        // 노선 위치를 먼저 받는다 — 후보의 유일한 출처이고, 역명→역 id 학습(구간 안 판정)도 여기서 채워진다
+        val lineTrains = runCatching { trains.onLine(lineBase(leg.line)) }.getOrElse { emptyList() }
+            .also { stationIds.learn(lineBase(leg.line), it) }
+        val here = riding.locate(leg, fix) ?: return null
+        val candidates = riding.candidatesNear(leg, fix, heading, lineTrains)
+        if (candidates.isEmpty() && lineTrains.isNotEmpty()) {
+            // 노선에 열차는 도는데 유저 주변 구간 안에 한 대도 없다 = 아직 탄 게 아니다(집·역 밖·엉뚱한 좌표).
+            // 이때만 좌표를 버리고 탑승역 시드로 돌아간다 — 멀쩡한 "타기 전 시작"을 LOST로 만들지 않는다.
+            // 반대로 노선 위치 자체가 비면(미지원 노선·상류 장애) 위치 역을 기억한 채 재수집·LOST로 간다:
+            // 조용히 뒤차를 따라가지 않는다 (FR-706)
+            log.info("위치 주변 구간에 열차 없음 — here={} ({}→{}): 탑승역 시드로", here, leg.boardStop, leg.alightStop)
+            return null
+        }
+        log.info(
+            "중간 시작(위치) — here={} ({}→{}) 후보={}대 방면={}",
+            here, leg.boardStop, leg.alightStop, candidates.size, heading,
+        )
+        return LegSeed(heading, candidates, seedStop = here)
+    }
+
+    /** 좌표가 없으면(권한 거부·측위 실패) 위치 판정을 아예 건너뛴다 */
+    private fun LocationRequest.toFix(): RidingSeedResolver.Fix? {
+        val lat = lat ?: return null
+        val lng = lng ?: return null
+        return RidingSeedResolver.Fix(lat = lat, lng = lng, accuracyMeters = accuracy, ageSeconds = ageSeconds)
     }
 
     companion object {

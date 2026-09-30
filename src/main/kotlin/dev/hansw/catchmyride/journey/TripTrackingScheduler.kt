@@ -31,6 +31,10 @@ import java.time.LocalDateTime
  *   구간의 진행 방면(UP/DOWN)을 판정하고, 후보 수집·특정·노선 목격을 그 방면으로만 좁힌다. 판정 전엔
  *   방면 필터 없이 자기선택으로 강등하되 단일 후보 위치 표시는 하지 않는다(반대 방면 열차를 보여줬던 사고).
  *   판정되는 순간 후보를 그 방면으로 다시 잡고, 특정 전엔 매 틱 탑승역에서 후보를 보태 늦게 시작한 트립도 흡수한다
+ * - 중간 시작(seedStop != null, 위치로 잡은 트립)은 탑승역 전광판을 후보로 쓰지 않는다 —
+ *   유저가 이미 지난 역이라 거기 있는 건 뒤차다 (2026-09-24 오너 제보: 출발지·목적지 사이에서
+ *   시작하면 열차를 못 잡았다). 후보가 비었을 때만 위치 역 주변에서 60초 안에 다시 잡는다
+ *   (RidingSeedResolver — 시작 시드와 같은 규칙, 2026-09-29 개정으로 좌표 기준 창)
  * - 노선 전체 위치(realtimePosition)는 보강 피드다 (2026-09-16 출근 실측: 하차역 전광판은 방면당
  *   1·2번째 열차만 보여줘 특정 전엔 내내 "위치 확인 중", 특정 후에도 뒤차에 밀리면 3분 두절 LOST가 났다):
  *   특정 전 후보 목격 = 타임아웃 억제 + 단일 후보면 currentStop 제공, 특정 후 목격 = 두절 LOST 방지.
@@ -42,6 +46,7 @@ class TripTrackingScheduler(
     private val trips: TripRepository,
     private val trains: TrainPositions,
     private val stationIds: StationIdCache,
+    private val riding: RidingSeedResolver,
     private val pushTokens: PushTokenRepository,
     private val fcm: FcmPushClient,
     private val clock: Clock,
@@ -115,9 +120,27 @@ class TripTrackingScheduler(
             }
             // 특정 전엔 매 틱 탑승역에서 후보를 보탠다 — 시작 순간 전광판이 비었거나(2026-09-16 저녁
             // 실측) 반대 방면 열차만 잡혔던 트립(2026-09-21 QA)이 실제 탄 열차를 뒤늦게라도 잡도록.
-            // 방면이 이번 틱에 정해졌으면 이전 후보(방면 무관 수집)는 버리고 그 방면으로 다시 잡는다
-            val seeded = boardingCandidates(boardRows, leg.line, tracked.heading)
-            val candidates = if (headingResolvedNow) seeded else (tracked.candidates + seeded).distinct()
+            // 방면이 이번 틱에 정해졌으면 이전 후보(방면 무관 수집)는 버리고 그 방면으로 다시 잡는다.
+            // 단 **중간 시작**(위치로 잡은 트립, seedStop != null)은 탑승역 전광판을 보지 않는다 —
+            // 유저가 이미 지난 역이라 거기 있는 건 뒤차다 (2026-09-24 오너 제보)
+            val seeded = if (tracked.seedStop == null) {
+                boardingCandidates(boardRows, leg.line, tracked.heading)
+            } else if (tracked.candidates.isEmpty() &&
+                Duration.between(tracked.legStartedAt, now) <= RIDING_RESEED_WINDOW
+            ) {
+                // 시작 순간 노선 위치가 비어 후보를 못 잡은 경우만 짧게 재수집한다 — 위치 역 창을
+                // 계속 보면 뒤따라 들어온 열차를 유저 열차로 착각한다
+                ridingWindow(tracked, leg, lineSnapshots)
+            } else {
+                emptyList()
+            }
+            val candidates = when {
+                !headingResolvedNow -> (tracked.candidates + seeded).distinct()
+                // 중간 시작은 위치로 잡은 후보가 전부라 버리지 않고, 방면이 반대로 목격된 것만 쳐낸다
+                tracked.seedStop != null ->
+                    dropWrongHeading((tracked.candidates + seeded).distinct(), tracked.heading, onLine(leg.line, lineSnapshots))
+                else -> seeded
+            }
             if (candidates != tracked.candidates) {
                 tracked = tracked.copy(candidates = candidates)
                 log.info("후보 갱신 — trip={} 후보={}대 방면={}", tracked.tripId, candidates.size, tracked.heading)
@@ -243,6 +266,31 @@ class TripTrackingScheduler(
         trips.save(tracked, now)
     }
 
+    /**
+     * 중간 시작 트립의 후보 재수집 — 저장된 위치 역(seedStop) 주변의 우리 방면·구간 안 열차.
+     * 시작 시드와 같은 규칙(RidingSeedResolver, §9-2)이라 결과가 어긋나지 않는다
+     */
+    private fun ridingWindow(
+        trip: Trip,
+        leg: JourneyLeg,
+        lineSnapshots: MutableMap<String, List<LineTrain>>,
+    ): List<String> {
+        val seedStop = trip.seedStop ?: return emptyList()
+        return riding.candidatesAround(leg, seedStop, trip.heading, onLine(leg.line, lineSnapshots))
+    }
+
+    /** 방면이 뒤늦게 정해졌을 때 — 반대 방면으로 목격된 후보만 쳐낸다 (모르는 열차는 남긴다, NFR-03) */
+    private fun dropWrongHeading(candidates: List<String>, heading: Heading?, lineTrains: List<LineTrain>): List<String> {
+        if (heading == null) {
+            return candidates
+        }
+        val wrong = lineTrains
+            .filter { it.heading != null && it.heading != heading }
+            .map { trainNoKey(it.trainNo) }
+            .toSet()
+        return candidates.filterNot { trainNoKey(it) in wrong }
+    }
+
     /** 노선 위치 스냅샷 — 같은 틱 안 노선당 상류 1회 (NFR-08). 보강 피드라 실패는 빈 목록 강등 */
     private fun onLine(legLine: String, cache: MutableMap<String, List<LineTrain>>): List<LineTrain> =
         cache.getOrPut(lineBase(legLine)) {
@@ -316,6 +364,12 @@ class TripTrackingScheduler(
          * 아니므로 짧게 실패를 알리는 쪽을 택했다 (오너 결정 2026-09-16: 15분 → 1분)
          */
         private val IDENTIFY_TIMEOUT: Duration = Duration.ofMinutes(1)
+
+        /**
+         * 중간 시작 트립이 위치 역 창에서 후보를 다시 잡아 볼 수 있는 시간 — 이보다 지나면
+         * 그 창에 있는 건 유저 열차가 아니라 뒤차다 (2026-09-24)
+         */
+        private val RIDING_RESEED_WINDOW: Duration = Duration.ofSeconds(60)
 
         /** 특정된 열차가 목록에서 사라진 채 이 시간이 지나면 LOST (순간 누락은 허용) */
         private val LOST_AFTER: Duration = Duration.ofMinutes(3)

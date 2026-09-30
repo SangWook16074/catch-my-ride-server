@@ -4,6 +4,7 @@ import dev.hansw.catchmyride.push.FcmPushClient
 import dev.hansw.catchmyride.push.PushProperties
 import dev.hansw.catchmyride.push.PushToken
 import dev.hansw.catchmyride.push.PushTokenRepository
+import dev.hansw.catchmyride.stops.SubwayStationCatalog
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -49,7 +50,14 @@ class TripTrackingSchedulerTest {
         clock.now = Instant.parse("2026-09-14T08:00:00Z")
     }
 
-    private fun scheduler() = TripTrackingScheduler(trips, trains, StationIdCache(), pushTokens, fcm, clock)
+    @Autowired lateinit var stations: SubwayStationCatalog
+
+    private fun scheduler(): TripTrackingScheduler {
+        val stationIds = StationIdCache()
+        return TripTrackingScheduler(
+            trips, trains, stationIds, RidingSeedResolver(stations, stationIds), pushTokens, fcm, clock,
+        )
+    }
 
     /** 3호선 충무로(331)→교대(340) — 2026-09-21 QA 재현용 구간 (하행 = id 증가) */
     private val line3Legs = listOf(JourneyLeg("SUBWAY", "3호선", "충무로", "교대"))
@@ -361,6 +369,65 @@ class TripTrackingSchedulerTest {
         assertTrue(fcm.sent.isEmpty())
         assertTrue(trips.pushLogged("trip-1", 0, TripPushStage.PRE)) // 기록은 남아 중복 방지
         assertEquals(2, trips.find("trip-1")!!.remainingStops)
+    }
+
+    // --- 위치 기반 "중간 시작" (2026-09-24 오너 제보: 출발지를 지나 시작하면 뒤차를 잡았다) ---
+
+    private fun ridingTrip(now: LocalDateTime, candidates: List<String>) = Trip(
+        tripId = "riding-1", userKey = "dev-user", journeyId = null, legs = line3Legs,
+        legIndex = 0, phase = TripPhase.TRACKING, btrainNo = null, candidates = candidates,
+        seedStop = "약수", heading = Heading.DOWN, remainingStops = null, realtimeAvailable = true,
+        legStartedAt = now, lastSeenAt = null, startedAt = now,
+    )
+
+    @Test
+    fun `중간 시작 트립은 탑승역 전광판의 뒤차를 후보로 보태지 않는다`() {
+        val now = LocalDateTime.now(clock)
+        trips.insert(ridingTrip(now, candidates = listOf("3349")), now) // 위치로 잡은 유저 열차
+        // 탑승역(충무로)엔 유저 **뒤에** 오는 열차가 도착 중 — 예전엔 이게 후보로 섞여 뒤차를 추적했다
+        trains["충무로"] = listOf(line3Row("3399", "충무로", 1003000331, Heading.DOWN, arvlCd = "1"))
+        trains["교대"] = emptyList()
+
+        scheduler().tick()
+
+        val saved = trips.find("riding-1")!!
+        assertEquals(listOf("3349"), saved.candidates)
+        assertNull(saved.btrainNo)
+    }
+
+    @Test
+    fun `중간 시작 트립은 후보가 비었을 때만 위치 역 창에서 다시 잡는다`() {
+        val now = LocalDateTime.now(clock)
+        trips.insert(ridingTrip(now, candidates = emptyList()), now)
+        trains["충무로"] = listOf(line3Row("3399", "충무로", 1003000331, Heading.DOWN, arvlCd = "1"))
+        trains["교대"] = emptyList()
+        trains.line("3호선", listOf(
+            LineTrain("3349", "약수", isExpress = false, heading = Heading.DOWN, stationId = 1003000334),
+            LineTrain("3399", "충무로", isExpress = false, heading = Heading.DOWN, stationId = 1003000331),
+        ))
+
+        scheduler().tick()
+
+        val saved = trips.find("riding-1")!!
+        assertEquals(listOf("3349"), saved.candidates) // 위치 역(약수)의 열차만 — 뒤차 3399는 아니다
+        assertEquals("약수", saved.currentStop)
+    }
+
+    @Test
+    fun `중간 시작 재수집 창이 지나면 위치 역에 들어온 뒤차를 잡지 않는다`() {
+        val now = LocalDateTime.now(clock)
+        trips.insert(ridingTrip(now, candidates = emptyList()), now)
+        trains["교대"] = emptyList()
+        trains.line("3호선", listOf(
+            LineTrain("3399", "약수", isExpress = false, heading = Heading.DOWN, stationId = 1003000334),
+        ))
+        clock.now = clock.now.plus(Duration.ofSeconds(90)) // 창(60초) 밖 — 이제 약수에 있는 건 뒤차다
+
+        scheduler().tick()
+
+        val saved = trips.find("riding-1")!!
+        assertTrue(saved.candidates.isEmpty())
+        assertEquals(TripPhase.LOST, saved.phase) // 조용히 틀리느니 끊겼다고 말한다 (FR-706)
     }
 }
 
