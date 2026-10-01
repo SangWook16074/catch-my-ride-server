@@ -20,6 +20,8 @@ class TripApiTest {
 
     @Autowired lateinit var environment: Environment
     @Autowired lateinit var jdbc: JdbcClient
+    // 서버 시계(Asia/Seoul)로 시각을 만든다 — CI 러너는 UTC라 LocalDateTime.now()는 9시간 과거가 된다
+    @Autowired lateinit var clock: java.time.Clock
 
     @BeforeEach
     fun wipe() {
@@ -94,7 +96,7 @@ class TripApiTest {
         val first = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
         val oldId = Regex("\"tripId\":\"([^\"]+)\"").find(first.body())!!.groupValues[1]
         jdbc.sql("UPDATE trip SET phase = 'DONE', undoable_until = :until WHERE trip_id = :id")
-            .param("until", java.time.LocalDateTime.now().plusMinutes(5)).param("id", oldId).update()
+            .param("until", java.time.LocalDateTime.now(clock).plusMinutes(5)).param("id", oldId).update()
 
         assertEquals(201, request(environment, "POST", "/api/v1/trips", quickLegs).statusCode())
     }
@@ -142,7 +144,7 @@ class TripApiTest {
         val started = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
         val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(started.body())!!.groupValues[1]
         jdbc.sql("UPDATE trip SET phase = 'DONE', undoable_until = :until WHERE trip_id = :id")
-            .param("until", java.time.LocalDateTime.now().plusMinutes(5)).param("id", tripId).update()
+            .param("until", java.time.LocalDateTime.now(clock).plusMinutes(5)).param("id", tripId).update()
 
         val response = request(environment, "GET", "/api/v1/trips/current")
 
