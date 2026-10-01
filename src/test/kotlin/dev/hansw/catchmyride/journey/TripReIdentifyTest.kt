@@ -29,6 +29,7 @@ class TripReIdentifyTest {
     @Autowired lateinit var stations: SubwayStationCatalog
     @Autowired lateinit var legValidator: JourneyLegValidator
     @Autowired lateinit var userKeys: UserKeyResolver
+    @Autowired lateinit var surfaceUpdater: TripSurfaceUpdater
     @Autowired lateinit var clock: Clock
     @Autowired lateinit var jdbc: JdbcClient
 
@@ -53,7 +54,7 @@ class TripReIdentifyTest {
         return TripController(
             trips, journeys, trains, stationIds,
             RidingSeedResolver(stations, stationIds),
-            legValidator, userKeys, clock,
+            stations, legValidator, userKeys, surfaceUpdater, clock,
         )
     }
 
@@ -128,7 +129,7 @@ class TripReIdentifyTest {
         }.exceptionOrNull()
 
         assertTrue(error is ApiException, error.toString())
-        assertTrue(error.message!!.contains("다시 시작"), error.message!!)
+        assertTrue(error.message.contains("다시 시작"), error.message)
     }
 
     @Test

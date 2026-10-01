@@ -31,6 +31,7 @@ class TripStartLocationTest {
     @Autowired lateinit var stations: SubwayStationCatalog
     @Autowired lateinit var legValidator: JourneyLegValidator
     @Autowired lateinit var userKeys: UserKeyResolver
+    @Autowired lateinit var surfaceUpdater: TripSurfaceUpdater
     @Autowired lateinit var clock: Clock
     @Autowired lateinit var jdbc: JdbcClient
 
@@ -57,7 +58,7 @@ class TripStartLocationTest {
         val controller = TripController(
             trips, journeys, trains, stationIds,
             RidingSeedResolver(stations, stationIds),
-            legValidator, userKeys, clock,
+            stations, legValidator, userKeys, surfaceUpdater, clock,
         )
         val started = controller.quickStart(
             auth = null,

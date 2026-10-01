@@ -37,10 +37,39 @@ data class Trip(
     val legStartedAt: LocalDateTime,
     val lastSeenAt: LocalDateTime?,
     val startedAt: LocalDateTime,
+    /** 구간 바꾸기(§9-3 switch-leg, v0.10) 사용 횟수 — 트립당 3회 한도 */
+    val switchCount: Int = 0,
+    /** "아직 안 내렸어요"(§9-3 undo-alight, v0.11) 사용 횟수 — 트립당 2회 한도 */
+    val undoCount: Int = 0,
+    /** "내렸어요"를 되돌릴 수 있는 마감(v0.11) — null이면 되돌리기 불가(자동 하차이거나 이미 지남) */
+    val undoableUntil: LocalDateTime? = null,
+    /** "내렸어요" 직전 구간 상태 보관(v0.11) — undo-alight가 이걸 그대로 복원한다 */
+    val undoSnapshot: AlightSnapshot? = null,
 ) {
     val currentLeg: JourneyLeg get() = legs[legIndex]
     val isLastLeg: Boolean get() = legIndex >= legs.size - 1
 }
+
+/**
+ * "내렸어요"(§9-3 alighted, v0.11) 직전 구간 상태 — undo-alight가 **재특정 없이** 그대로 복원한다.
+ * [discardedLegIndex]는 alighted가 새로 시작한 다음 구간의 인덱스(마지막 구간 하차로 DONE이 됐으면
+ * null) — undo 시 그 구간의 발송 기록을 지운다("새로 시작했던 다음 구간은 버린다", API.md §9-3).
+ */
+data class AlightSnapshot(
+    val legIndex: Int,
+    val phase: TripPhase,
+    val btrainNo: String?,
+    val candidates: List<String>,
+    val rejectedTrains: List<String>,
+    val seedStop: String?,
+    val heading: Heading?,
+    val remainingStops: Int?,
+    val currentStop: String?,
+    val realtimeAvailable: Boolean,
+    val legStartedAt: LocalDateTime,
+    val lastSeenAt: LocalDateTime?,
+    val discardedLegIndex: Int?,
+)
 
 @Repository
 class TripRepository(
@@ -74,9 +103,10 @@ class TripRepository(
             """
             INSERT INTO trip (trip_id, user_key, journey_id, legs_json, leg_index, phase, btrain_no,
                               candidates_json, rejected_trains_json, seed_stop, heading, remaining_stops, current_stop, realtime_available,
-                              leg_started_at, last_seen_at, started_at, updated_at)
+                              leg_started_at, last_seen_at, started_at, switch_count, undo_count, undoable_until, undo_snapshot_json, updated_at)
             VALUES (:tripId, :userKey, :journeyId, :legs, :legIndex, :phase, :btrainNo,
-                    :candidates, :rejected, :seedStop, :heading, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt, :now)
+                    :candidates, :rejected, :seedStop, :heading, :remaining, :currentStop, :realtime, :legStartedAt, :lastSeenAt, :startedAt,
+                    :switchCount, :undoCount, :undoableUntil, :undoSnapshot, :now)
             """.trimIndent(),
         )
             .param("tripId", trip.tripId)
@@ -96,6 +126,10 @@ class TripRepository(
             .param("legStartedAt", trip.legStartedAt)
             .param("lastSeenAt", trip.lastSeenAt)
             .param("startedAt", trip.startedAt)
+            .param("switchCount", trip.switchCount)
+            .param("undoCount", trip.undoCount)
+            .param("undoableUntil", trip.undoableUntil)
+            .param("undoSnapshot", trip.undoSnapshot?.let { objectMapper.writeValueAsString(it) })
             .param("now", now)
             .update()
     }
@@ -112,7 +146,9 @@ class TripRepository(
                             candidates_json = :candidates, rejected_trains_json = :rejected, seed_stop = :seedStop,
                             heading = :heading, remaining_stops = :remaining,
                             current_stop = :currentStop, realtime_available = :realtime,
-                            leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt
+                            leg_started_at = :legStartedAt, last_seen_at = :lastSeenAt,
+                            switch_count = :switchCount, undo_count = :undoCount,
+                            undoable_until = :undoableUntil, undo_snapshot_json = :undoSnapshot
                             ${if (touch) ", updated_at = :now" else ""}
             WHERE trip_id = :tripId
             """.trimIndent(),
@@ -130,12 +166,18 @@ class TripRepository(
             .param("realtime", trip.realtimeAvailable)
             .param("legStartedAt", trip.legStartedAt)
             .param("lastSeenAt", trip.lastSeenAt)
+            .param("switchCount", trip.switchCount)
+            .param("undoCount", trip.undoCount)
+            .param("undoableUntil", trip.undoableUntil)
+            .param("undoSnapshot", trip.undoSnapshot?.let { objectMapper.writeValueAsString(it) })
             .param("now", now)
             .update()
     }
 
     fun delete(tripId: String) {
         jdbc.sql("DELETE FROM trip_push_log WHERE trip_id = :tripId").param("tripId", tripId).update()
+        jdbc.sql("DELETE FROM trip_surface_token WHERE trip_id = :tripId").param("tripId", tripId).update()
+        jdbc.sql("DELETE FROM trip_surface_state WHERE trip_id = :tripId").param("tripId", tripId).update()
         jdbc.sql("DELETE FROM trip WHERE trip_id = :tripId").param("tripId", tripId).update()
     }
 
@@ -149,6 +191,12 @@ class TripRepository(
             """
             DELETE FROM trip_push_log WHERE trip_id IN (SELECT trip_id FROM trip WHERE updated_at < :before)
             """.trimIndent(),
+        ).param("before", before).update()
+        jdbc.sql(
+            "DELETE FROM trip_surface_token WHERE trip_id IN (SELECT trip_id FROM trip WHERE updated_at < :before)",
+        ).param("before", before).update()
+        jdbc.sql(
+            "DELETE FROM trip_surface_state WHERE trip_id IN (SELECT trip_id FROM trip WHERE updated_at < :before)",
         ).param("before", before).update()
         jdbc.sql("DELETE FROM trip WHERE updated_at < :before").param("before", before).update()
     }
@@ -221,5 +269,9 @@ class TripRepository(
         legStartedAt = rs.getTimestamp("leg_started_at").toLocalDateTime(),
         lastSeenAt = rs.getTimestamp("last_seen_at")?.toLocalDateTime(),
         startedAt = rs.getTimestamp("started_at").toLocalDateTime(),
+        switchCount = rs.getObject("switch_count")?.let { (it as Number).toInt() } ?: 0, // 2026-10-01 이전 트립은 null
+        undoCount = rs.getObject("undo_count")?.let { (it as Number).toInt() } ?: 0,
+        undoableUntil = rs.getTimestamp("undoable_until")?.toLocalDateTime(),
+        undoSnapshot = rs.getString("undo_snapshot_json")?.let { objectMapper.readValue(it, AlightSnapshot::class.java) },
     )
 }

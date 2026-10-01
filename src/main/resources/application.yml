@@ -53,13 +53,27 @@ push:
   # compose는 ./secrets 볼륨(/app/secrets)에 두고 경로를 넘긴다 (mTLS 인증서와 동일 방식)
   fcm-service-account-path: ${FCM_SERVICE_ACCOUNT:}
 
-# §9 하차 알림 — 트립 추적 엔진 (TripTrackingScheduler). 20초마다 진행 중 트립의
-# 하차역 접근 열차를 조회해 상태 전진·푸시 발송. 지하철 키(SEOUL_OPEN_DATA_KEY) 미설정이면
-# 후보·추적이 비어 LOST로 강등될 뿐 서버는 정상 동작한다.
+# §9 하차 알림 — 트립 추적 엔진 (TripTrackingScheduler). 10초마다(v0.12, 2026-10-01 —
+# 종전 20초: 진행 표면 원격 갱신의 체감 지연을 10초 당긴다) 진행 중 트립의 하차역 접근 열차를
+# 조회해 상태 전진·푸시 발송. 지하철 키(SEOUL_OPEN_DATA_KEY) 미설정이면
+# 후보·추적이 비어 LOST로 강등될 뿐 서버는 정상 동작한다. 틱은 진행 중 트립이 있는 노선만
+# 조회하므로(trips.findActive() 기준) 트립이 없으면 상류 호출도 없다 — 간격 단축의 비용은
+# 활성 트립 수에만 비례한다(NFR-08).
 journey:
   tracking:
     enabled: true
-    interval: PT20S
+    interval: PT10S
+
+# 진행 표면 원격 갱신(API.md §9-5, v0.12) — iOS Live Activity ActivityKit push. .p8 토큰 인증 키
+# 중 하나라도 비면 ApnsClient가 dry-run으로 강등(로그만, 서버는 정상 동작). Android는 §4-1 FCM과
+# 같은 push_token을 그대로 쓰므로 별도 설정이 없다. 🧑 Apple Developer에서 APNs 키(.p8) 발급 필요
+# (Live Activities용 키는 기존 범용 APNs 키를 재사용할 수 있다).
+apns:
+  key-id: ${APNS_KEY_ID:}
+  team-id: ${APNS_TEAM_ID:}
+  private-key: ${APNS_PRIVATE_KEY:}       # .p8 파일 내용(PEM) — 경로가 아니라 내용 그대로
+  bundle-id: ${APNS_BUNDLE_ID:}
+  sandbox: ${APNS_SANDBOX:false}
 
 # 네이버클라우드 Maps (API.md §6 지도 미리보기·§7 지오코딩) — 키 미설정이면 두 엔드포인트는 503
 # (클라이언트가 OSM 폴백/안내 문구로 강등). 🧑 NCP 콘솔 > Maps에서 Static Map·Geocoding 이용 신청 후 발급

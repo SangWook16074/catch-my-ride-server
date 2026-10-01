@@ -132,6 +132,12 @@ ALTER TABLE trip ADD COLUMN IF NOT EXISTS heading VARCHAR(8);
 ALTER TABLE trip ADD COLUMN IF NOT EXISTS seed_stop VARCHAR(64);
 -- 2026-09-30 마이그레이션 — 다시 잡기(§9-3)에서 물린 열차 (오너 요청: 내가 탄 열차가 아닐 때 재요청)
 ALTER TABLE trip ADD COLUMN IF NOT EXISTS rejected_trains_json TEXT;
+-- 2026-10-01 마이그레이션 — 구간 바꾸기(switch-leg, API.md v0.10) 사용 횟수, 트립당 3회 한도
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS switch_count INT DEFAULT 0 NOT NULL;
+-- 2026-10-01 마이그레이션 — "내렸어요"/되돌리기(alighted/undo-alight, API.md v0.11)
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS undo_count INT DEFAULT 0 NOT NULL;
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS undoable_until TIMESTAMP;
+ALTER TABLE trip ADD COLUMN IF NOT EXISTS undo_snapshot_json TEXT;
 
 -- FR-704 이벤트(구간 하차)당 최대 2회(PRE·ALIGHT) — PK가 중복 발송을 구조적으로 막는다 (push_log와 동일 설계)
 CREATE TABLE IF NOT EXISTS trip_push_log (
@@ -141,4 +147,27 @@ CREATE TABLE IF NOT EXISTS trip_push_log (
     delivered BOOLEAN NOT NULL,
     sent_at   TIMESTAMP NOT NULL,
     CONSTRAINT trip_push_log_pkey PRIMARY KEY (trip_id, leg_index, stage)
+);
+
+-- §9-5 진행 표면 원격 갱신(API.md v0.12) — 트립별 Live Activity push token. iOS만 등록(Android는
+-- §4-1 push_token의 FCM 토큰을 그대로 쓴다). 트립과 함께 지운다(TripRepository.delete/deleteStale).
+CREATE TABLE IF NOT EXISTS trip_surface_token (
+    trip_id    VARCHAR(36) PRIMARY KEY,
+    platform   VARCHAR(16) NOT NULL,  -- IOS (Android는 이 표를 쓰지 않는다)
+    token      VARCHAR(512) NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+-- §9-5 표면 갱신 변화 감지(마지막 발송값) + 분당 발송 상한(트립당 6건) 카운터
+CREATE TABLE IF NOT EXISTS trip_surface_state (
+    trip_id                 VARCHAR(36) PRIMARY KEY,
+    last_phase              VARCHAR(16),
+    last_leg_index          INT,
+    last_remaining_stops    INT,
+    last_current_stop       VARCHAR(64),
+    last_event_stop         VARCHAR(64),
+    last_realtime_available BOOLEAN,
+    sent_count              INT NOT NULL DEFAULT 0,  -- 현재 분당 발송 윈도우 안의 건수
+    window_started_at       TIMESTAMP,               -- 위 카운트가 시작된 시각(1분 지나면 리셋)
+    updated_at              TIMESTAMP NOT NULL
 );

@@ -77,6 +77,13 @@ class RidingSeedResolver(
         candidatesAround(leg, fix.lat, fix.lng, heading, lineTrains)
 
     /**
+     * 시작 구간 판정(§9-2 v0.10)에서 구간끼리 "후보 열차가 더 가까운 쪽"을 비교하려면 거리값이
+     * 필요하다 — [candidatesNear]는 후보 목록만 주므로 이 메서드로 거리를 함께 돌려준다
+     */
+    fun candidatesNearWithDistance(leg: JourneyLeg, fix: Fix, heading: Heading?, lineTrains: List<LineTrain>): Pair<List<String>, Double?> =
+        candidatesAroundDetailed(leg, fix.lat, fix.lng, heading, lineTrains)
+
+    /**
      * 특정 전 재수집 시드 — 좌표를 저장하지 않으므로(NFR-05) 저장된 위치 역(seedStop) 좌표를 기준점으로.
      * 같은 규칙이라 시작과 결과가 어긋나지 않는다
      */
@@ -92,7 +99,15 @@ class RidingSeedResolver(
         lng: Double,
         heading: Heading?,
         lineTrains: List<LineTrain>,
-    ): List<String> {
+    ): List<String> = candidatesAroundDetailed(leg, lat, lng, heading, lineTrains).first
+
+    private fun candidatesAroundDetailed(
+        leg: JourneyLeg,
+        lat: Double,
+        lng: Double,
+        heading: Heading?,
+        lineTrains: List<LineTrain>,
+    ): Pair<List<String>, Double?> {
         val line = lineBase(leg.line)
         val boardId = stationIds.get(leg.line, leg.boardStop)
         val alightId = stationIds.get(leg.line, leg.alightStop)
@@ -108,8 +123,9 @@ class RidingSeedResolver(
             .filter { it.third <= RIDING_WINDOW_METERS }
         // 기준점에 가장 가까운 역의 열차들 — 유저가 탄 열차만큼 유저에게 가까운 열차는 없다.
         // 같은 역에 두 대가 보고되면(급행 교차 등) 둘 다 후보로 두고 하차역 목격으로 자기선택한다
-        val nearestStop = placed.minByOrNull { it.third }?.second ?: return emptyList()
-        return placed.filter { it.second == nearestStop }.map { it.first }.distinct()
+        val nearest = placed.minByOrNull { it.third } ?: return emptyList<String>() to null
+        val candidates = placed.filter { it.second == nearest.second }.map { it.first }.distinct()
+        return candidates to nearest.third
     }
 
     /** 열차의 현재 역이 탑승역~하차역 사이인지 — 탑승역의 뒤차가 여기서 걸린다. 모르면 통과 (NFR-03) */
@@ -123,19 +139,24 @@ class RidingSeedResolver(
     companion object {
         /**
          * 이보다 낡은 좌표는 쓰지 않는다 — 열차는 1분에 한두 정거장을 간다. 낡은 좌표는 "없음"보다
-         * 나쁘다: 유저 뒤 열차를 자신 있게 고르게 한다 (2026-09-29)
+         * 나쁘다: 유저 뒤 열차를 자신 있게 고르게 한다 (2026-09-29).
+         * private이 아닌 이유: §9-2 "시작 구간 판정"(v0.10, TripController.determineStartLeg)도
+         * 같은 좌표 게이트(90초·2.5km)를 구간 선택 전에 한 번 더 확인한다 — 값이 갈라지면 안 된다
          */
-        private const val MAX_FIX_AGE_SECONDS = 90L
+        const val MAX_FIX_AGE_SECONDS = 90L
 
         /**
          * 이보다 오차가 큰 좌표는 쓰지 않는다. 지하·터널에선 기지국 측위로 ±1~2km가 흔해 처음 1km로
          * 잡았던 상한은 **실주행에서 좌표를 거의 다 버렸다**(중간 시작이 안 걸린 주된 이유).
          * 한 역이 아니라 "탑승역에서 몇 정거장 지났는지"를 가리기만 해도 뒤차는 걸러진다 (2026-09-29 완화)
          */
-        private const val MAX_ACCURACY_METERS = 2_500.0
+        const val MAX_ACCURACY_METERS = 2_500.0
 
-        /** 이 반경(+오차) 안에 그 노선 역이 없으면 "역 근처가 아니다"로 본다 (역간 거리 대비 여유) */
-        private const val NEAR_STATION_METERS = 1_500.0
+        /**
+         * 이 반경(+오차) 안에 그 노선 역이 없으면 "역 근처가 아니다"로 본다 (역간 거리 대비 여유).
+         * §9-2 "시작 구간 판정" 2번(타기 직전 구간 — 가장 가까운 탑승역)도 같은 반경을 쓴다
+         */
+        const val NEAR_STATION_METERS = 1_500.0
 
         /** 탑승역에서 최소 이만큼은 떨어져 있어야 "이미 지났다"로 본다 (역 구내·플랫폼 여유) */
         private const val MIN_BOARD_CLEARANCE_METERS = 700.0

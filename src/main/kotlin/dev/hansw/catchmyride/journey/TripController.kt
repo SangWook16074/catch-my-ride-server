@@ -2,6 +2,7 @@ package dev.hansw.catchmyride.journey
 
 import dev.hansw.catchmyride.api.ApiException
 import dev.hansw.catchmyride.api.UserKeyResolver
+import dev.hansw.catchmyride.stops.SubwayStationCatalog
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.DeleteMapping
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import java.time.Clock
+import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -28,14 +30,16 @@ class TripController(
     private val trains: TrainPositions,
     private val stationIds: StationIdCache,
     private val riding: RidingSeedResolver,
+    private val stations: SubwayStationCatalog,
     private val legValidator: JourneyLegValidator,
     private val userKeys: UserKeyResolver,
+    private val surfaceUpdater: TripSurfaceUpdater,
     private val clock: Clock,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    data class StartResponse(val tripId: String, val startedAt: String)
+    data class StartResponse(val tripId: String, val startedAt: String, val legIndex: Int)
 
     /**
      * 시작 시점 유저 위치(선택) — §9-2 "중간 시작". 이미 탄 상태로 시작하면 탑승역 전광판에는
@@ -50,6 +54,8 @@ class TripController(
         val ageSeconds: Long? = null,
     )
     data class StartRequest(val location: LocationRequest?)
+    /** §9-3 구간 바꾸기 — legIndex는 필수(0 ≤ 값 < 구간 수), location은 시작과 같은 선택 필드 */
+    data class SwitchLegRequest(val legIndex: Int, val location: LocationRequest? = null)
     data class QuickStartRequest(val legs: List<LegRequest>?, val location: LocationRequest? = null)
     data class StatusResponse(
         val phase: String,
@@ -64,6 +70,11 @@ class TripController(
          * 낡은 숫자를 현재처럼 보여주는 건 조용히 틀리는 것과 같다 (NFR-03)
          */
         val lastSeenAt: String?,
+        /**
+         * "내렸어요"를 되돌릴 수 있는 마감(v0.11, 없으면 null) — alighted 직후 5분 동안만 값이 있다.
+         * 서버가 도착을 직접 확인한 하차(자동 TRANSFER·DONE)엔 null (API.md §9-3)
+         */
+        val undoableUntil: String?,
         val fetchedAt: String,
     )
 
@@ -78,7 +89,7 @@ class TripController(
         val journey = journeys.find(userKey, journeyId) ?: throw ApiException.settingNotFound()
         val trip = startTrip(userKey, journeyId = journeyId, legs = journey.legs, location = request?.location)
         journeys.touchLastUsed(userKey, journeyId, trip.startedAt) // 히스토리 정렬 키 (§9-2)
-        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
+        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO), legIndex = trip.legIndex)
     }
 
     /**
@@ -95,7 +106,7 @@ class TripController(
         val userKey = userKeys.resolve(auth)
         val legs = legValidator.validate(request.legs)
         val trip = startTrip(userKey, journeyId = null, legs = legs, location = request.location)
-        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO))
+        return StartResponse(tripId = trip.tripId, startedAt = trip.startedAt.format(ISO), legIndex = trip.legIndex)
     }
 
     private fun startTrip(
@@ -108,13 +119,14 @@ class TripController(
             throw ApiException.invalidRequest("진행 중인 트립이 있습니다: ${it.tripId}")
         }
         val now = LocalDateTime.now(clock)
-        val seed = seedLeg(legs.first(), location)
+        val legIndex = determineStartLeg(legs, location)
+        val seed = seedLeg(legs[legIndex], location)
         val trip = Trip(
             tripId = UUID.randomUUID().toString(),
             userKey = userKey,
             journeyId = journeyId,
             legs = legs,
-            legIndex = 0,
+            legIndex = legIndex,
             phase = TripPhase.TRACKING,
             btrainNo = null,
             candidates = seed.candidates,
@@ -130,22 +142,100 @@ class TripController(
         return trip
     }
 
+    /**
+     * API.md §9-2 "시작 구간 판정" (v0.10, 2026-10-01 오너 결정) — 구간이 2개 이상인 여정에서
+     * 중간 시작(§9-2 1~4번)보다 먼저 "유저가 지금 몇 번째 구간에 있는가"를 정한다.
+     * `next-leg`·`re-identify`·`switch-leg`는 구간이 이미 정해져 있으므로 이 판정을 하지 않는다.
+     *
+     * 1. **타고 있는 구간** — 구간마다 중간 시작(열차 후보)을 돌려 열차가 잡히는 구간을 고른다.
+     *    둘 이상이면 유저 좌표에서 후보 열차가 더 가까운 쪽, 같으면 뒤 구간.
+     * 2. **타기 직전의 구간** — 안 잡히면 유저 좌표에서 가장 가까운 탑승역(반경 1.5km+오차)의 구간.
+     *    환승역은 앞 구간의 하차역이자 뒷 구간의 탑승역이라 둘 다 가깝지만, 탑승역 기준으로만 재므로
+     *    뒷 구간만 걸린다(앞 구간의 탑승역은 멀다) — 같은 거리면 뒤 구간.
+     * 3. 둘 다 아니면 0번 구간.
+     *
+     * 좌표 게이트(§9-2 1번 — 90초·2.5km)는 그대로 쓰고, 통과 못 하거나 좌표가 없으면 0번(종전 동작).
+     * 건너뛴 앞 구간은 추적·발송하지 않는다 — startTrip이 바로 판정된 구간부터 시드를 만든다.
+     */
+    private fun determineStartLeg(legs: List<JourneyLeg>, location: LocationRequest?): Int {
+        if (legs.size < 2) {
+            return 0
+        }
+        val fix = location?.toFix() ?: return 0
+        if (fix.ageSeconds != null && fix.ageSeconds > RidingSeedResolver.MAX_FIX_AGE_SECONDS) {
+            return 0 // 좌표 게이트 통과 못 함 — 종전 동작(0번)
+        }
+        if (fix.accuracyMeters != null && fix.accuracyMeters > RidingSeedResolver.MAX_ACCURACY_METERS) {
+            return 0
+        }
+
+        // 1. 타고 있는 구간 — 구간마다 방면 판정 후 위치 기반 중간 시작(ridingSeed)을 돌려본다
+        var ridingMatch: Pair<Int, Double>? = null
+        for (i in legs.indices) {
+            val leg = legs[i]
+            val heading = legHeadingForDetection(leg)
+            val seed = ridingSeed(leg, location, heading, emptyList()) ?: continue
+            val distance = seed.distanceMeters ?: continue
+            if (seed.candidates.isEmpty()) {
+                continue
+            }
+            if (ridingMatch == null || distance <= ridingMatch!!.second) {
+                ridingMatch = i to distance
+            }
+        }
+        ridingMatch?.let { (legIndex, distance) ->
+            log.info("시작 구간 판정 — leg={} (타는 중, 거리={}m)", legIndex, distance.toInt())
+            return legIndex
+        }
+
+        // 2. 타기 직전의 구간 — 가장 가까운 탑승역(반경 1.5km + 오차)
+        val radius = RidingSeedResolver.NEAR_STATION_METERS + (fix.accuracyMeters ?: 0.0)
+        var nearestBoard: Pair<Int, Double>? = null
+        for (i in legs.indices) {
+            val leg = legs[i]
+            val distance = stations.distanceTo(lineBase(leg.line), leg.boardStop, fix.lat, fix.lng) ?: continue
+            if (distance <= radius && (nearestBoard == null || distance <= nearestBoard!!.second)) {
+                nearestBoard = i to distance
+            }
+        }
+        nearestBoard?.let { (legIndex, distance) ->
+            log.info("시작 구간 판정 — leg={} (탑승 직전, 거리={}m)", legIndex, distance.toInt())
+            return legIndex
+        }
+
+        // 3. 둘 다 아니면 0번 구간
+        log.info("시작 구간 판정 — leg=0 (기본값)")
+        return 0
+    }
+
+    /** 구간 판정에서만 쓰는 방면 계산 — seedLeg와 같은 규칙이지만 로그·후보(boardingCandidates)는 건너뛴다 */
+    private fun legHeadingForDetection(leg: JourneyLeg): Heading? {
+        val boardRows = try {
+            trains.approaching(leg.boardStop).also(stationIds::learn)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val alightRows = try {
+            trains.approaching(leg.alightStop).also(stationIds::learn)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val boardId = stationIds.get(leg.line, leg.boardStop)
+        val alightId = stationIds.get(leg.line, leg.alightStop)
+        return if (boardId != null && alightId != null) {
+            resolveHeading(leg.line, boardId, alightId, boardRows + alightRows)
+        } else {
+            null
+        }
+    }
+
     @GetMapping("/api/v1/trips/{tripId}")
     fun status(
         @RequestHeader(value = "Authorization", required = false) auth: String?,
         @PathVariable tripId: String,
     ): StatusResponse {
         val trip = findOwned(auth, tripId)
-        return StatusResponse(
-            phase = trip.phase.name,
-            legIndex = trip.legIndex,
-            remainingStops = trip.remainingStops,
-            currentStop = trip.currentStop, // 열차 현재 위치 역명(상류 arvlMsg3) — 모르면 null (API.md §9-3)
-            eventStop = trip.currentLeg.alightStop,
-            realtimeAvailable = trip.realtimeAvailable,
-            lastSeenAt = trip.lastSeenAt?.format(ISO),
-            fetchedAt = LocalDateTime.now(clock).format(ISO),
-        )
+        return trip.toStatusResponse(LocalDateTime.now(clock))
     }
 
     /** 환승 후 다음 구간 수동 재개 (FR-703) — TRANSFER에서만 */
@@ -176,18 +266,12 @@ class TripController(
             realtimeAvailable = true,
             legStartedAt = now,
             lastSeenAt = null,
+            undoableUntil = null, // 새 구간으로 넘어감 — 직전 구간의 되돌리기 창은 더 이상 의미 없다
+            undoSnapshot = null,
         )
         trips.save(resumed, now)
-        return StatusResponse(
-            phase = resumed.phase.name,
-            legIndex = resumed.legIndex,
-            remainingStops = null,
-            currentStop = null,
-            eventStop = nextLeg.alightStop,
-            realtimeAvailable = true,
-            lastSeenAt = null, // 새 구간 — 아직 목격 없음
-            fetchedAt = now.format(ISO),
-        )
+        surfaceUpdater.forceSend(trip.tripId, now) // §9-5 — 수동 전환 직후 1회
+        return resumed.toStatusResponse(now)
     }
 
     /**
@@ -237,20 +321,177 @@ class TripController(
         )
         trips.save(reset, now)
         trips.clearPushLog(trip.tripId, trip.legIndex)
+        surfaceUpdater.forceSend(trip.tripId, now) // §9-5 — 수동 전환 직후 1회
         log.info(
             "열차 다시 잡기 — trip={} leg={} 물린열차={} 후보={}대 위치역={}",
             trip.tripId, trip.legIndex, rejected, seed.candidates.size, seed.seedStop,
         )
-        return StatusResponse(
-            phase = reset.phase.name,
-            legIndex = reset.legIndex,
+        return reset.toStatusResponse(now)
+    }
+
+    /**
+     * "구간 바꾸기" (§9-3 switch-leg, v0.10, 2026-10-01 오너 결정) — 시작 구간 자동 판정이 틀렸거나
+     * 좌표 없이 시작돼 0번 구간에 묶였을 때의 출구. 앞·뒤 어느 쪽으로도 바꿀 수 있고 `TRANSFER`에서도
+     * 허용한다(환승역에서 다음이 아닌 구간으로 갈 수 있다). 고른 구간의 물린 열차 목록·다시 잡기
+     * 횟수·발송 기록을 비우고 새로 센다 — 구간이 바뀌면 이전 추적으로 나간 예고는 무관하다(FR-704).
+     * 트립당 [MAX_SWITCH]회를 넘기면 400 — 구간을 오가며 푸시를 계속 재개방하지 않는다(2026-09-10 교훈).
+     */
+    @PostMapping("/api/v1/trips/{tripId}/switch-leg")
+    fun switchLeg(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @PathVariable tripId: String,
+        @RequestBody request: SwitchLegRequest,
+    ): StatusResponse {
+        val trip = findOwned(auth, tripId)
+        if (trip.phase == TripPhase.DONE) {
+            throw ApiException.invalidRequest("이미 종료된 트립입니다")
+        }
+        val target = request.legIndex
+        if (target !in trip.legs.indices || target == trip.legIndex) {
+            throw ApiException.invalidRequest("legIndex가 올바르지 않습니다: $target")
+        }
+        if (trip.switchCount >= MAX_SWITCH) {
+            throw ApiException.invalidRequest("구간을 너무 여러 번 바꿨어요. 다시 시작해주세요")
+        }
+        val now = LocalDateTime.now(clock)
+        val leg = trip.legs[target]
+        val seed = seedLeg(leg, request.location)
+        val switched = trip.copy(
+            legIndex = target,
+            phase = TripPhase.TRACKING,
+            btrainNo = null,
+            candidates = seed.candidates,
+            seedStop = seed.seedStop,
+            heading = seed.heading,
+            rejectedTrains = emptyList(),
             remainingStops = null,
             currentStop = null,
-            eventStop = leg.alightStop,
             realtimeAvailable = true,
-            lastSeenAt = null, // 다시 잡기 — 목격 기록도 초기화된다
-            fetchedAt = now.format(ISO),
+            legStartedAt = now,
+            lastSeenAt = null,
+            switchCount = trip.switchCount + 1,
+            undoableUntil = null,
+            undoSnapshot = null,
         )
+        trips.save(switched, now)
+        trips.clearPushLog(tripId, target) // 그 구간 발송 기록을 비우고 새로 센다 (FR-704)
+        surfaceUpdater.forceSend(tripId, now) // §9-5 — 수동 전환 직후 1회
+        log.info("구간 바꾸기 — trip={} {}→{} (횟수={})", tripId, trip.legIndex, target, switched.switchCount)
+        return switched.toStatusResponse(now)
+    }
+
+    /**
+     * "내렸어요" (§9-3 alighted, v0.11, 2026-10-01 오너 결정) — 화면이 상류 지연으로 한 정거장쯤
+     * 뒤처져도 유저가 기다리지 않게 하는 출구다. `TRACKING`·`ARRIVING`이고 `remainingStops ≤ 2`일
+     * 때만 받는다 — 그 밖은 400(아직 멀리 있는데 누른 건 실수다). 환승 구간이면 `next-leg`와 같은
+     * 시드로 **곧바로 다음 구간**을 시작하고(TRANSFER를 거치지 않는다), 마지막 구간이면 DONE.
+     * 하차한 구간의 아직 안 나간 발송은 자연히 취소된다 — 전진한 뒤에는 scheduler가 이 트립의
+     * `legIndex`(바뀐 값)만 보므로 옛 구간의 PRE·ALIGHT는 다시는 시도되지 않는다(사후 발송 금지, FR-704).
+     * 되돌리기용으로 직전 구간 상태를 [AlightSnapshot]에 보관하고 `undoableUntil = now + 5분`을 채운다.
+     */
+    @PostMapping("/api/v1/trips/{tripId}/alighted")
+    fun alighted(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @PathVariable tripId: String,
+        @RequestBody(required = false) request: StartRequest?,
+    ): StatusResponse {
+        val trip = findOwned(auth, tripId)
+        if (trip.phase != TripPhase.TRACKING && trip.phase != TripPhase.ARRIVING) {
+            throw ApiException.invalidRequest("추적 중인 구간이 아닙니다")
+        }
+        val remaining = trip.remainingStops
+        if (remaining == null || remaining > 2) {
+            throw ApiException.invalidRequest("아직 하차역에 가깝지 않습니다")
+        }
+        val now = LocalDateTime.now(clock)
+        val snapshot = AlightSnapshot(
+            legIndex = trip.legIndex,
+            phase = trip.phase,
+            btrainNo = trip.btrainNo,
+            candidates = trip.candidates,
+            rejectedTrains = trip.rejectedTrains,
+            seedStop = trip.seedStop,
+            heading = trip.heading,
+            remainingStops = trip.remainingStops,
+            currentStop = trip.currentStop,
+            realtimeAvailable = trip.realtimeAvailable,
+            legStartedAt = trip.legStartedAt,
+            lastSeenAt = trip.lastSeenAt,
+            discardedLegIndex = if (trip.isLastLeg) null else trip.legIndex + 1,
+        )
+        val advanced = if (trip.isLastLeg) {
+            trip.copy(phase = TripPhase.DONE, remainingStops = 0)
+        } else {
+            val nextIndex = trip.legIndex + 1
+            val nextLeg = trip.legs[nextIndex]
+            val seed = seedLeg(nextLeg, request?.location)
+            trip.copy(
+                legIndex = nextIndex,
+                phase = TripPhase.TRACKING,
+                btrainNo = null,
+                candidates = seed.candidates,
+                seedStop = seed.seedStop,
+                heading = seed.heading,
+                rejectedTrains = emptyList(),
+                remainingStops = null,
+                currentStop = null,
+                realtimeAvailable = true,
+                legStartedAt = now,
+                lastSeenAt = null,
+            )
+        }
+        val withSnapshot = advanced.copy(undoableUntil = now.plus(UNDO_WINDOW), undoSnapshot = snapshot)
+        trips.save(withSnapshot, now)
+        surfaceUpdater.forceSend(tripId, now) // §9-5 — 수동 전환 직후 1회
+        log.info("내렸어요 — trip={} leg={}→{} phase={}", tripId, trip.legIndex, withSnapshot.legIndex, withSnapshot.phase)
+        return withSnapshot.toStatusResponse(now)
+    }
+
+    /**
+     * "아직 안 내렸어요" (§9-3 undo-alight, v0.11) — alighted를 실수로 눌렀을 때 직전 구간을
+     * **보관해 둔 그대로** 복원한다(같은 열차를 다시 특정하지 않는다). 새로 시작했던 다음 구간은
+     * 버리고 그 구간의 발송 기록도 지운다. `undoableUntil`이 null이거나 지났으면 400,
+     * 트립당 [MAX_UNDO]회를 넘기면 400(내렸어요↔되돌리기 반복으로 푸시를 재개방하지 않는다).
+     * 마지막 구간의 DONE도 창 안이면 복원된다 — findOwned는 phase를 가리지 않는다.
+     */
+    @PostMapping("/api/v1/trips/{tripId}/undo-alight")
+    fun undoAlight(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+        @PathVariable tripId: String,
+    ): StatusResponse {
+        val trip = findOwned(auth, tripId)
+        val now = LocalDateTime.now(clock)
+        val deadline = trip.undoableUntil
+        val snapshot = trip.undoSnapshot
+        if (deadline == null || snapshot == null || now.isAfter(deadline)) {
+            throw ApiException.invalidRequest("이미 시간이 지나 되돌릴 수 없어요 — 구간 바꾸기를 써주세요")
+        }
+        if (trip.undoCount >= MAX_UNDO) {
+            throw ApiException.invalidRequest("너무 여러 번 되돌렸어요. 다시 시작해주세요")
+        }
+        val restored = trip.copy(
+            legIndex = snapshot.legIndex,
+            phase = snapshot.phase,
+            btrainNo = snapshot.btrainNo,
+            candidates = snapshot.candidates,
+            rejectedTrains = snapshot.rejectedTrains,
+            seedStop = snapshot.seedStop,
+            heading = snapshot.heading,
+            remainingStops = snapshot.remainingStops,
+            currentStop = snapshot.currentStop,
+            realtimeAvailable = snapshot.realtimeAvailable,
+            legStartedAt = snapshot.legStartedAt,
+            lastSeenAt = snapshot.lastSeenAt,
+            undoCount = trip.undoCount + 1,
+            undoableUntil = null,
+            undoSnapshot = null,
+        )
+        trips.save(restored, now)
+        // 새로 시작했던 다음 구간은 버린다 — 그 구간 발송 기록도 지운다 (직전 구간 발송 기록은 보존)
+        snapshot.discardedLegIndex?.let { trips.clearPushLog(tripId, it) }
+        surfaceUpdater.forceSend(tripId, now) // §9-5 — 수동 전환 직후 1회
+        log.info("아직 안 내렸어요(되돌리기) — trip={} leg={} (횟수={})", tripId, restored.legIndex, restored.undoCount)
+        return restored.toStatusResponse(now)
     }
 
     /** 완료·중도 취소 공용, 멱등 (§9-3) */
@@ -263,6 +504,7 @@ class TripController(
         val userKey = userKeys.resolve(auth)
         val trip = trips.find(tripId) ?: return // 멱등 — 이미 없어도 204
         if (trip.userKey == userKey) {
+            surfaceUpdater.notifyEnd(trip, LocalDateTime.now(clock)) // §9-5 — iOS에 end 신호(삭제 전에 보낸다)
             trips.delete(tripId)
         }
     }
@@ -276,7 +518,26 @@ class TripController(
         return trip
     }
 
-    private data class LegSeed(val heading: Heading?, val candidates: List<String>, val seedStop: String?)
+    /** 상태 응답 조립 공용 — undoableUntil은 지났으면 숨긴다(값은 남겨 두되 화면엔 null로 보인다) */
+    private fun Trip.toStatusResponse(now: LocalDateTime): StatusResponse = StatusResponse(
+        phase = phase.name,
+        legIndex = legIndex,
+        remainingStops = remainingStops,
+        currentStop = currentStop,
+        eventStop = currentLeg.alightStop,
+        realtimeAvailable = realtimeAvailable,
+        lastSeenAt = lastSeenAt?.format(ISO),
+        undoableUntil = undoableUntil?.takeIf { it.isAfter(now) }?.format(ISO),
+        fetchedAt = now.format(ISO),
+    )
+
+    private data class LegSeed(
+        val heading: Heading?,
+        val candidates: List<String>,
+        val seedStop: String?,
+        /** 위치 기반 시드일 때 후보 열차까지의 거리(m) — §9-2 "시작 구간 판정"의 구간 간 비교용. 탑승역 시드면 null */
+        val distanceMeters: Double? = null,
+    )
 
     /**
      * 구간 시작 시드 — 방면 판정 + 탑승 후보.
@@ -331,7 +592,8 @@ class TripController(
         val lineTrains = runCatching { trains.onLine(lineBase(leg.line)) }.getOrElse { emptyList() }
             .also { stationIds.learn(lineBase(leg.line), it) }
         val here = riding.locate(leg, fix) ?: return null
-        val candidates = riding.candidatesNear(leg, fix, heading, lineTrains).withoutRejected(rejected)
+        val (candidatesRaw, distance) = riding.candidatesNearWithDistance(leg, fix, heading, lineTrains)
+        val candidates = candidatesRaw.withoutRejected(rejected)
         if (candidates.isEmpty() && lineTrains.isNotEmpty()) {
             // 노선에 열차는 도는데 유저 주변 구간 안에 한 대도 없다 = 아직 탄 게 아니다(집·역 밖·엉뚱한 좌표).
             // 이때만 좌표를 버리고 탑승역 시드로 돌아간다 — 멀쩡한 "타기 전 시작"을 LOST로 만들지 않는다.
@@ -344,7 +606,7 @@ class TripController(
             "중간 시작(위치) — here={} ({}→{}) 후보={}대 방면={}",
             here, leg.boardStop, leg.alightStop, candidates.size, heading,
         )
-        return LegSeed(heading, candidates, seedStop = here)
+        return LegSeed(heading, candidates, seedStop = here, distanceMeters = distance)
     }
 
     /** 좌표가 없으면(권한 거부·측위 실패) 위치 판정을 아예 건너뛴다 */
@@ -359,5 +621,14 @@ class TripController(
 
         /** 한 구간에서 "내가 탄 열차가 아니에요"를 받아 줄 횟수 — 넘으면 다시 시작이 맞다 */
         private const val MAX_REJECTED = 3
+
+        /** 트립당 "구간 바꾸기" 허용 횟수 — 넘으면 다시 시작이 맞다 (2026-09-10 폭주 사고 교훈) */
+        private const val MAX_SWITCH = 3
+
+        /** 트립당 "아직 안 내렸어요" 허용 횟수 — 내렸어요↔되돌리기 반복으로 푸시를 재개방하지 않는다 */
+        private const val MAX_UNDO = 2
+
+        /** "내렸어요"를 되돌릴 수 있는 창 (v0.11) */
+        private val UNDO_WINDOW: Duration = Duration.ofMinutes(5)
     }
 }

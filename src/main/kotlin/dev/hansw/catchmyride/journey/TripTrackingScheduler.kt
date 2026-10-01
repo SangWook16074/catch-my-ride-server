@@ -11,7 +11,9 @@ import java.time.Duration
 import java.time.LocalDateTime
 
 /**
- * §9 트립 추적 엔진 — 20초마다 진행 중 트립의 하차역 접근 열차를 조회해 상태를 전진시킨다.
+ * §9 트립 추적 엔진 — 10초마다(v0.12, 2026-10-01 — 종전 20초) 진행 중 트립의 하차역 접근 열차를
+ * 조회해 상태를 전진시킨다. 틱은 `trips.findActive()`가 돌려주는 트립의 노선만 조회하므로, 진행
+ * 중 트립이 없으면 상류 호출이 전혀 없다 — "활성 노선만 10초"(§9-5)를 트립 단위로 이미 만족한다.
  *
  * 불변 조건 (테스트가 명세):
  * - 열차 특정: 탑승역 후보(btrainNo) 중 하나가 하차역 목록에 나타나면 그 열차로 확정 —
@@ -44,6 +46,9 @@ import java.time.LocalDateTime
  *   1·2번째 열차만 보여줘 특정 전엔 내내 "위치 확인 중", 특정 후에도 뒤차에 밀리면 3분 두절 LOST가 났다):
  *   특정 전 후보 목격 = 타임아웃 억제 + 단일 후보면 currentStop 제공, 특정 후 목격 = 두절 LOST 방지.
  *   정거장 카운트·발송 판정은 여전히 전광판 목격만 쓴다 (역 순서 데이터 없이 아는 척 금지, NFR-03)
+ * - 진행 표면 원격 갱신(§9-5, v0.12)은 하차·환승 알림(FR-704)과 별개 채널이다 — 트립 하나를 처리한
+ *   직후 [TripSurfaceUpdater.afterTick]이 표면 값(phase·legIndex·remainingStops·currentStop·eventStop·
+ *   realtimeAvailable)이 바뀌었는지 보고, 바뀌었을 때만 그 자리에서 보낸다(틱 끝 일괄 아님)
  */
 @Component
 @ConditionalOnProperty("journey.tracking.enabled", havingValue = "true", matchIfMissing = true)
@@ -54,12 +59,13 @@ class TripTrackingScheduler(
     private val riding: RidingSeedResolver,
     private val pushTokens: PushTokenRepository,
     private val fcm: FcmPushClient,
+    private val surfaceUpdater: TripSurfaceUpdater,
     private val clock: Clock,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    @Scheduled(fixedDelayString = "\${journey.tracking.interval:PT20S}")
+    @Scheduled(fixedDelayString = "\${journey.tracking.interval:PT10S}")
     fun poll() = tick()
 
     fun tick() {
@@ -70,6 +76,9 @@ class TripTrackingScheduler(
         for (trip in trips.findActive()) {
             try {
                 process(trip, now, snapshots, lineSnapshots)
+                // 표면 값이 이번 틱에 바뀌었으면 그 자리에서 원격 갱신 (§9-5) — process() 내부 각
+                // 분기를 일일이 손대지 않도록 틱 끝이 아니라 트립 처리 직후(여전히 다른 트립 전에)에 비교한다
+                surfaceUpdater.afterTick(trip.tripId, now)
             } catch (e: Exception) {
                 log.warn("트립 추적 실패 — trip={} 건너뜀: {}", trip.tripId, e.message)
             }

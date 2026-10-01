@@ -110,6 +110,51 @@ class FcmPushClient(
         throw lastError!!
     }
 
+    /**
+     * §9-5 진행 표면 원격 갱신(Android, v0.12) — 데이터 전용 고우선 메시지. 알림 트레이를 만들지
+     * 않는다(소리·배너 없음) — 네이티브 FirebaseMessagingService가 받아 지속 알림을 그 자리에서
+     * 갱신한다(Flutter 엔진을 깨우지 않는다). 하차·환승 알림(§9-4)과 카운트를 공유하지 않는다.
+     */
+    fun sendDataMessage(userKey: String, token: PushToken, data: Map<String, String>): Boolean {
+        if (!live) {
+            log.info("[dry-run] FCM 표면 갱신 미발송 — user={} data={}", userKey, data)
+            return false
+        }
+        val payload = mapOf(
+            "message" to mapOf(
+                "token" to token.token,
+                "data" to data,
+                "android" to mapOf("priority" to "HIGH"),
+            ),
+        )
+        var lastError: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                credentials.refreshIfExpired()
+                rest.post()
+                    .uri("/v1/projects/$projectId/messages:send")
+                    .header("Authorization", "Bearer ${credentials.accessToken.tokenValue}")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(payload)
+                    .retrieve()
+                    .toBodilessEntity()
+                return true
+            } catch (e: RestClientResponseException) {
+                if (e.statusCode.value() == 404 || e.responseBodyAsString.contains("UNREGISTERED")) {
+                    log.warn("FCM 토큰 폐기(UNREGISTERED) — user={} (표면 갱신)", userKey)
+                    tokens.delete(userKey)
+                    return false
+                }
+                lastError = e
+                log.warn("FCM 표면 갱신 발송 실패(시도 {}/2) — user={}: {}", attempt + 1, userKey, e.message)
+            } catch (e: Exception) {
+                lastError = e
+                log.warn("FCM 표면 갱신 발송 실패(시도 {}/2) — user={}: {}", attempt + 1, userKey, e.message)
+            }
+        }
+        throw lastError!!
+    }
+
     private fun title(decision: PushDecision): String = when (decision.stage) {
         PushStage.PRE -> "곧 나가야 해요"
         PushStage.REMIND -> "1분 뒤 나가세요"

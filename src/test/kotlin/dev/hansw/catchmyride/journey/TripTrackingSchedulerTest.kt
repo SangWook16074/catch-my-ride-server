@@ -33,6 +33,9 @@ class TripTrackingSchedulerTest {
 
     @Autowired lateinit var trips: TripRepository
     @Autowired lateinit var pushTokens: PushTokenRepository
+    @Autowired lateinit var surfaceTokens: TripSurfaceTokenRepository
+    @Autowired lateinit var surfaceStates: TripSurfaceStateRepository
+    @Autowired lateinit var apns: dev.hansw.catchmyride.push.ApnsClient
     @Autowired lateinit var jdbc: JdbcClient
 
     private val clock = MutableClock()
@@ -49,6 +52,8 @@ class TripTrackingSchedulerTest {
         jdbc.sql("DELETE FROM trip_push_log").update()
         jdbc.sql("DELETE FROM trip").update()
         jdbc.sql("DELETE FROM push_token").update()
+        jdbc.sql("DELETE FROM trip_surface_token").update()
+        jdbc.sql("DELETE FROM trip_surface_state").update()
         trains.reset()
         clock.now = Instant.parse("2026-09-14T08:00:00Z")
     }
@@ -57,8 +62,9 @@ class TripTrackingSchedulerTest {
 
     private fun scheduler(): TripTrackingScheduler {
         val stationIds = StationIdCache()
+        val surfaceUpdater = TripSurfaceUpdater(trips, surfaceTokens, surfaceStates, pushTokens, apns, fcm)
         return TripTrackingScheduler(
-            trips, trains, stationIds, RidingSeedResolver(stations, stationIds), pushTokens, fcm, clock,
+            trips, trains, stationIds, RidingSeedResolver(stations, stationIds), pushTokens, fcm, surfaceUpdater, clock,
         )
     }
 

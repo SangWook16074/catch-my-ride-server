@@ -531,7 +531,7 @@ paths:
   /api/v1/journeys/{journeyId}/trips:
     post:
       tags: [journeys]
-      summary: "§9-2 트립 시작 (유저 수동, 동시 1개). location(선택)을 주면 이미 탄 상태의 '중간 시작'을 위치로 잡는다"
+      summary: "§9-2 트립 시작 (유저 수동, 동시 1개). location(선택)을 주면 이미 탄 상태의 '중간 시작'을 위치로 잡는다. 구간이 2개 이상이면 §9-2 '시작 구간 판정'(v0.10)으로 legIndex를 정한다"
       parameters: [{ name: journeyId, in: path, required: true, schema: { type: string } }]
       requestBody:
         required: false
@@ -539,7 +539,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/TripStartLocation" }
       responses:
-        "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
+        "201": { description: "{ tripId, startedAt, legIndex } — 서버가 열차 추적 시작. legIndex는 v0.10 추가(없으면 0으로 읽는다)" }
         "400": { description: "진행 중 트립 존재 (메시지에 기존 tripId)" }
   /api/v1/trips:
     post:
@@ -568,7 +568,7 @@ paths:
                 location:
                   $ref: "#/components/schemas/TripStartLocationValue"
       responses:
-        "201": { description: "{ tripId, startedAt } — 서버가 열차 추적 시작" }
+        "201": { description: "{ tripId, startedAt, legIndex } — 서버가 열차 추적 시작" }
         "400": { description: "구간 검증 실패 또는 진행 중 트립 존재 (메시지에 기존 tripId)" }
   /api/v1/trips/{tripId}:
     get:
@@ -576,7 +576,7 @@ paths:
       summary: "§9-3 트립 상태 (클라 15~30초 폴링). TRACKING의 remainingStops null = 위치 확인 중"
       parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
       responses:
-        "200": { description: "{ phase, legIndex, remainingStops, currentStop, eventStop, realtimeAvailable, lastSeenAt, fetchedAt } — lastSeenAt은 마지막 목격 시각(null 가능), 특정 후 두절 시 'N분 전 기준' 표시용" }
+        "200": { description: "{ phase, legIndex, remainingStops, currentStop, eventStop, realtimeAvailable, lastSeenAt, undoableUntil, fetchedAt } — lastSeenAt은 마지막 목격 시각(null 가능), 특정 후 두절 시 'N분 전 기준' 표시용. undoableUntil은 v0.11 추가(alighted 직후 5분만 값 있음, 그 외 null)" }
         "404": { description: "없는 트립 (NOT_FOUND)" }
     delete:
       tags: [journeys]
@@ -613,6 +613,73 @@ paths:
       responses:
         "200": { description: "재개된 트립 상태" }
         "400": { description: "TRANSFER가 아님 (INVALID_REQUEST)" }
+
+  /api/v1/trips/{tripId}/switch-leg:
+    post:
+      tags: [journeys]
+      summary: "§9-3 구간 바꾸기 (v0.10) — 시작 구간 자동 판정이 틀렸거나 좌표 없이 시작됐을 때 유저가 직접 구간을 고른다. 앞·뒤 어느 쪽이든, TRANSFER에서도 허용"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [legIndex]
+              properties:
+                legIndex: { type: integer, example: 2, description: "0 ≤ 값 < 구간 수, 현재 구간과 달라야 한다" }
+                location:
+                  $ref: "#/components/schemas/TripStartLocationValue"
+      responses:
+        "200": { description: "초기화된 트립 상태 (phase TRACKING, 고른 legIndex, remainingStops·currentStop·lastSeenAt null) — 그 구간의 발송 기록도 비운다" }
+        "400": { description: "legIndex가 현재와 같거나 범위 밖·DONE 상태·트립당 3회 초과 (INVALID_REQUEST)" }
+        "404": { description: "존재하지 않는 트립" }
+
+  /api/v1/trips/{tripId}/alighted:
+    post:
+      tags: [journeys]
+      summary: "§9-3 내렸어요 (v0.11) — TRACKING·ARRIVING이고 remainingStops ≤ 2일 때만. 환승 구간이면 곧바로 다음 구간, 마지막 구간이면 DONE"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: false
+        description: "다음 구간이 있으면 next-leg와 같은 location(선택)으로 그 구간의 중간 시작을 시도한다"
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TripStartLocation" }
+      responses:
+        "200": { description: "갱신된 트립 상태 — undoableUntil = now + 5분" }
+        "400": { description: "TRACKING·ARRIVING이 아니거나 remainingStops가 2보다 크다(또는 null) (INVALID_REQUEST)" }
+        "404": { description: "존재하지 않는 트립" }
+
+  /api/v1/trips/{tripId}/undo-alight:
+    post:
+      tags: [journeys]
+      summary: "§9-3 아직 안 내렸어요 (v0.11) — alighted 직전 구간 상태를 그대로 복원(재특정 없음). 새로 시작했던 다음 구간은 버린다. 마지막 구간의 DONE도 창 안이면 복원"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "복원된 트립 상태 — undoableUntil null" }
+        "400": { description: "undoableUntil이 없거나 지났다, 또는 트립당 2회 초과 (INVALID_REQUEST)" }
+        "404": { description: "존재하지 않는 트립" }
+
+  /api/v1/trips/{tripId}/surface-token:
+    put:
+      tags: [journeys]
+      summary: "§9-5 진행 표면 원격 갱신 토큰 등록 (v0.12) — iOS Live Activity push token. Android는 호출하지 않는다(§4-1 FCM 토큰을 그대로 쓴다)"
+      parameters: [{ name: tripId, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, token]
+              properties:
+                platform: { type: string, enum: [IOS], example: IOS }
+                token: { type: string, description: "Activity push token(hex)", example: "a1b2c3…" }
+      responses:
+        "204": { description: "등록·갱신 완료 — 토큰은 그 트립에만 귀속되고 트립과 함께 지운다" }
+        "400": { description: "platform·token 누락 (INVALID_REQUEST)" }
+        "404": { description: "존재하지 않거나 DONE·삭제된 트립 (무시해도 된다)" }
 
 components:
   schemas:
