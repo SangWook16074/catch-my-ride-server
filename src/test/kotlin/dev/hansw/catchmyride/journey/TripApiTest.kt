@@ -61,15 +61,99 @@ class TripApiTest {
     }
 
     @Test
-    fun `동시 트립은 1개 - 두 번째 시작은 기존 tripId를 담아 400이다`() {
+    fun `동시 트립은 1개 - 두 번째 시작은 409 TRIP_IN_PROGRESS + tripId 필드다`() {
         val journeyId = createJourney()
         val first = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
         val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(first.body())!!.groupValues[1]
 
         val second = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
-        assertEquals(400, second.statusCode(), second.body())
-        assertTrue(second.body().contains("진행 중인 트립"), second.body())
-        assertTrue(second.body().contains(tripId), second.body())
+        assertEquals(409, second.statusCode(), second.body())
+        assertTrue(second.body().contains("\"code\":\"TRIP_IN_PROGRESS\""), second.body())
+        // 메시지 파싱 없이 이어갈 수 있게 기계용 필드로 준다 (v0.13)
+        assertTrue(second.body().contains("\"tripId\":\"$tripId\""), second.body())
+    }
+
+    // v0.13 재발 방지 (2026-10-01 실기기 제보 "진행 중 트립이 있다며 시작이 안 된다")
+
+    @Test
+    fun `끝난 트립(DONE)은 새 시작을 막지 않는다 - 정리하고 시작한다`() {
+        val journeyId = createJourney()
+        val first = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
+        val oldId = Regex("\"tripId\":\"([^\"]+)\"").find(first.body())!!.groupValues[1]
+        jdbc.sql("UPDATE trip SET phase = 'DONE' WHERE trip_id = :id").param("id", oldId).update()
+
+        val second = request(environment, "POST", "/api/v1/trips", quickLegs)
+
+        assertEquals(201, second.statusCode(), second.body())
+        assertEquals(404, request(environment, "GET", "/api/v1/trips/$oldId").statusCode())
+    }
+
+    @Test
+    fun `되돌리기 창이 열린 DONE도 새 시작이 이긴다`() {
+        val journeyId = createJourney()
+        val first = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
+        val oldId = Regex("\"tripId\":\"([^\"]+)\"").find(first.body())!!.groupValues[1]
+        jdbc.sql("UPDATE trip SET phase = 'DONE', undoable_until = :until WHERE trip_id = :id")
+            .param("until", java.time.LocalDateTime.now().plusMinutes(5)).param("id", oldId).update()
+
+        assertEquals(201, request(environment, "POST", "/api/v1/trips", quickLegs).statusCode())
+    }
+
+    @Test
+    fun `내 진행 중 트립 조회 - 없으면 trip null`() {
+        val response = request(environment, "GET", "/api/v1/trips/current")
+        assertEquals(200, response.statusCode(), response.body())
+        assertTrue(response.body().contains("\"trip\":null"), response.body())
+    }
+
+    @Test
+    fun `내 진행 중 트립 조회 - 로컬 저장소가 비어도 서버가 tripId·여정·구간·상태를 돌려준다`() {
+        val journeyId = createJourney()
+        val started = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
+        val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(started.body())!!.groupValues[1]
+
+        val response = request(environment, "GET", "/api/v1/trips/current")
+
+        assertEquals(200, response.statusCode(), response.body())
+        val body = response.body()
+        assertTrue(body.contains("\"tripId\":\"$tripId\""), body)
+        assertTrue(body.contains("\"journeyId\":\"$journeyId\""), body)
+        assertTrue(body.contains("\"journeyLabel\":\"회사\""), body)
+        assertTrue(body.contains("\"boardStop\":\"여의도\""), body)
+        assertTrue(body.contains("\"phase\":\"TRACKING\""), body)
+    }
+
+    @Test
+    fun `내 진행 중 트립 조회 - 되돌리기 창이 닫힌 DONE은 정리하고 null`() {
+        val journeyId = createJourney()
+        val started = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
+        val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(started.body())!!.groupValues[1]
+        jdbc.sql("UPDATE trip SET phase = 'DONE' WHERE trip_id = :id").param("id", tripId).update()
+
+        val response = request(environment, "GET", "/api/v1/trips/current")
+
+        assertTrue(response.body().contains("\"trip\":null"), response.body())
+        assertEquals(404, request(environment, "GET", "/api/v1/trips/$tripId").statusCode())
+    }
+
+    @Test
+    fun `내 진행 중 트립 조회 - 되돌리기 창이 열린 DONE은 돌려준다`() {
+        val journeyId = createJourney()
+        val started = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
+        val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(started.body())!!.groupValues[1]
+        jdbc.sql("UPDATE trip SET phase = 'DONE', undoable_until = :until WHERE trip_id = :id")
+            .param("until", java.time.LocalDateTime.now().plusMinutes(5)).param("id", tripId).update()
+
+        val response = request(environment, "GET", "/api/v1/trips/current")
+
+        assertTrue(response.body().contains("\"phase\":\"DONE\""), response.body())
+    }
+
+    @Test
+    fun `일반 에러 바디에는 tripId 필드가 없다`() {
+        val response = request(environment, "POST", "/api/v1/trips", """{"legs":[]}""")
+        assertEquals(400, response.statusCode())
+        assertTrue(!response.body().contains("tripId"), response.body())
     }
 
     // §9-2 `POST /api/v1/trips` — 1회성(여정 비귀속) 트립 시작 (FR-708, 2026-09-21)
@@ -115,7 +199,7 @@ class TripApiTest {
         val first = request(environment, "POST", "/api/v1/journeys/$journeyId/trips")
         val tripId = Regex("\"tripId\":\"([^\"]+)\"").find(first.body())!!.groupValues[1]
         val second = request(environment, "POST", "/api/v1/trips", quickLegs)
-        assertEquals(400, second.statusCode(), second.body())
+        assertEquals(409, second.statusCode(), second.body())
         assertTrue(second.body().contains(tripId), second.body())
     }
 

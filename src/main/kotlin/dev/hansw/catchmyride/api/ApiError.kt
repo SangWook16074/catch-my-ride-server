@@ -1,5 +1,6 @@
 package dev.hansw.catchmyride.api
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -9,20 +10,28 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.servlet.resource.NoResourceFoundException
 
-/** API.md 공통 에러 응답: { "code": "...", "message": "..." } */
-data class ErrorResponse(val code: String, val message: String)
+/**
+ * API.md 공통 에러 응답: { "code": "...", "message": "..." }.
+ * `tripId`는 `TRIP_IN_PROGRESS`(§9-2, v0.13)에서만 실린다 — 클라이언트가 메시지 문자열을 파싱하지 않고
+ * 막고 있는 트립으로 바로 이어갈 수 있게 한다. 다른 에러에선 필드 자체를 내리지 않는다
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class ErrorResponse(val code: String, val message: String, val tripId: String? = null)
 
 /** 컨트롤러/서비스에서 던지면 ApiExceptionHandler가 공통 에러 응답으로 변환한다. */
 class ApiException(
     val status: HttpStatus,
     val code: String,
     override val message: String,
+    val tripId: String? = null,
 ) : RuntimeException(message) {
     companion object {
         fun invalidRequest(message: String) = ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message)
         fun upstreamUnavailable(message: String) = ApiException(HttpStatus.SERVICE_UNAVAILABLE, "UPSTREAM_UNAVAILABLE", message)
         fun settingNotFound() = ApiException(HttpStatus.NOT_FOUND, "SETTING_NOT_FOUND", "통근 설정이 없습니다")
         fun unauthorized() = ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "인증이 필요합니다")
+        fun tripInProgress(tripId: String) =
+            ApiException(HttpStatus.CONFLICT, "TRIP_IN_PROGRESS", "진행 중인 하차 알림이 있어요", tripId)
     }
 }
 
@@ -37,7 +46,7 @@ class ApiExceptionHandler {
 
     @ExceptionHandler(ApiException::class)
     fun handleApi(e: ApiException): ResponseEntity<ErrorResponse> =
-        ResponseEntity.status(e.status).body(ErrorResponse(e.code, e.message))
+        ResponseEntity.status(e.status).body(ErrorResponse(e.code, e.message, e.tripId))
 
     @ExceptionHandler(MissingServletRequestParameterException::class)
     fun handleMissingParam(e: MissingServletRequestParameterException): ResponseEntity<ErrorResponse> =

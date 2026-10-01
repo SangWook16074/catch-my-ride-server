@@ -115,10 +115,23 @@ class TripController(
         legs: List<JourneyLeg>,
         location: LocationRequest?,
     ): Trip {
-        trips.findByUser(userKey)?.let {
-            throw ApiException.invalidRequest("진행 중인 트립이 있습니다: ${it.tripId}")
-        }
         val now = LocalDateTime.now(clock)
+        trips.findByUser(userKey)?.let { existing ->
+            // 끝난 트립(DONE)은 새 시작을 막지 않는다 (v0.13, 2026-10-01 실기기 제보 "진행 중 트립이 있다며 시작이 안 된다"):
+            // DONE은 클라이언트 DELETE나 6시간 정리를 기다리며 남는데(되돌리기 창 v0.11 때문에 DELETE가 미뤄진다),
+            // 그 사이 앱이 죽으면 유저는 볼 수도 없는 트립에 막힌다. 새로 시작했다는 건 되돌릴 생각이 없다는 뜻이다
+            if (existing.phase == TripPhase.DONE) {
+                log.info("끝난 트립 정리 후 새 시작 — trip={} user={}", existing.tripId, userKey)
+                surfaceUpdater.notifyEnd(existing, now)
+                trips.delete(existing.tripId)
+            } else {
+                log.info(
+                    "시작 충돌(TRIP_IN_PROGRESS) — 기존 trip={} phase={} legIndex={} legAge={}",
+                    existing.tripId, existing.phase, existing.legIndex, Duration.between(existing.legStartedAt, now),
+                )
+                throw ApiException.tripInProgress(existing.tripId)
+            }
+        }
         val legIndex = determineStartLeg(legs, location)
         val seed = seedLeg(legs[legIndex], location)
         val trip = Trip(
@@ -227,6 +240,46 @@ class TripController(
         } else {
             null
         }
+    }
+
+    data class CurrentTripResponse(val trip: CurrentTrip?)
+
+    data class CurrentTrip(
+        val tripId: String,
+        val journeyId: String?,
+        val journeyLabel: String?,
+        val legs: List<JourneyLeg>,
+        val status: StatusResponse,
+    )
+
+    /**
+     * 내 진행 중 트립 — **서버가 원본**이다 (v0.13, 2026-10-01 실기기 제보 재발 방지).
+     * 지금까지 클라이언트는 자기가 저장한 tripId로만 트립을 알았고, 그 저장소가 비거나 어긋나면
+     * "진행 중 트립이 있다"는 400만 받고 이어갈 길이 없었다. 클라이언트는 앱 시작·포그라운드 복귀·시작 직전에
+     * 이걸 불러 로컬 상태를 맞춘다. 되돌리기 창이 닫힌 DONE은 여기서 정리하고 null로 답한다
+     */
+    @GetMapping("/api/v1/trips/current")
+    fun current(
+        @RequestHeader(value = "Authorization", required = false) auth: String?,
+    ): CurrentTripResponse {
+        val userKey = userKeys.resolve(auth)
+        val now = LocalDateTime.now(clock)
+        val trip = trips.findByUser(userKey) ?: return CurrentTripResponse(null)
+        if (trip.phase == TripPhase.DONE && trip.undoableUntil?.isAfter(now) != true) {
+            surfaceUpdater.notifyEnd(trip, now)
+            trips.delete(trip.tripId)
+            return CurrentTripResponse(null)
+        }
+        val label = trip.journeyId?.let { journeys.find(userKey, it)?.label }
+        return CurrentTripResponse(
+            CurrentTrip(
+                tripId = trip.tripId,
+                journeyId = trip.journeyId,
+                journeyLabel = label,
+                legs = trip.legs,
+                status = trip.toStatusResponse(now),
+            ),
+        )
     }
 
     @GetMapping("/api/v1/trips/{tripId}")

@@ -540,7 +540,7 @@ paths:
             schema: { $ref: "#/components/schemas/TripStartLocation" }
       responses:
         "201": { description: "{ tripId, startedAt, legIndex } — 서버가 열차 추적 시작. legIndex는 v0.10 추가(없으면 0으로 읽는다)" }
-        "400": { description: "진행 중 트립 존재 (메시지에 기존 tripId)" }
+        "409": { description: "진행 중 트립 존재 — { code: TRIP_IN_PROGRESS, message, tripId } (v0.13). 끝난(DONE) 트립은 막지 않고 정리된다" }
   /api/v1/trips:
     post:
       tags: [journeys]
@@ -569,7 +569,14 @@ paths:
                   $ref: "#/components/schemas/TripStartLocationValue"
       responses:
         "201": { description: "{ tripId, startedAt, legIndex } — 서버가 열차 추적 시작" }
-        "400": { description: "구간 검증 실패 또는 진행 중 트립 존재 (메시지에 기존 tripId)" }
+        "400": { description: "구간 검증 실패 (INVALID_REQUEST)" }
+        "409": { description: "진행 중 트립 존재 — { code: TRIP_IN_PROGRESS, message, tripId } (v0.13). 끝난(DONE) 트립은 막지 않고 정리된다" }
+  /api/v1/trips/current:
+    get:
+      tags: [journeys]
+      summary: "§9-3 내 진행 중 트립 (v0.13) — 서버가 원본. 앱 시작·포그라운드 복귀·시작 직전에 로컬 상태를 맞춘다"
+      responses:
+        "200": { description: "{ trip: null } 또는 { trip: { tripId, journeyId, journeyLabel, legs, status } } — status는 GET /trips/{tripId}와 같다. 되돌리기 창이 닫힌 DONE은 정리하고 null" }
   /api/v1/trips/{tripId}:
     get:
       tags: [journeys]
@@ -733,6 +740,7 @@ components:
       properties:
         code: { type: string, example: SETTING_NOT_FOUND }
         message: { type: string, example: 통근 설정이 없습니다 }
+        tripId: { type: string, description: "TRIP_IN_PROGRESS(409)에서만 — 막고 있는 트립 id (v0.13)" }
     TokenResponse:
       type: object
       required: [accessToken, refreshToken, expiresInSeconds]
