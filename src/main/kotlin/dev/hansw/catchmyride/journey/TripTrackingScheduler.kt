@@ -23,7 +23,8 @@ import java.time.LocalDateTime
  * - 발송은 이벤트(구간 하차)당 최대 2회: PRE(2정거장 전)·ALIGHT(직전 역) — trip_push_log PK로
  *   강제 (FR-704, 2026-09-10 폭주 사고 재발 방지). 도착을 지나쳐 발견한 경우 사후 발송하지 않는다
  * - remaining 0 = 하차역 도착: 마지막 구간이면 DONE, 아니면 TRANSFER(수동 재개 대기, FR-703)
- * - **특정 실패**(후보 없음·타임아웃)는 LOST — 어느 열차인지 모르는 채 아는 척하지 않는다 (FR-706, NFR-03)
+ * - **경로가 잡힌 트립은 LOST로 내리지 않는다** (오너 결정 2026-10-01, v0.14): 특정 전 무목격은 "위치 확인 중"(remainingStops
+ *   null)을 유지하며 후보를 계속 수집한다 — 어느 열차인지 모르는 채 숫자를 지어내지 않는 것(NFR-03)으로 충분하다
  * - **특정 후 목격 두절은 LOST가 아니다** (오너 결정 2026-09-30): 한번 잡힌 트립은 유저가 요청하지
  *   않는 이상 끊지 않는다. realtimeAvailable=false로 알리고 마지막 정거장·역명을 지키며, updated_at은
  *   올리지 않아 잊힌 트립 자동 정리 시계는 살려 둔다. 잘못 잡혔을 때의 출구는 유저의 다시 잡기(§9-3)다
@@ -187,15 +188,14 @@ class TripTrackingScheduler(
                     trips.save(tracked, now)
                     return
                 }
-                if (wasLost) {
-                    return // 특정 실패 LOST — 후보 재등장만 기다린다 (재LOST 판정·저장 없음)
-                }
-                // 전광판·노선 어디에도 없음 — 마지막 목격(없으면 구간 시작) 기준 타임아웃까지 위치 확인 중
-                if (Duration.between(tracked.lastSeenAt ?: tracked.legStartedAt, now) > IDENTIFY_TIMEOUT) {
-                    markLost(tracked, now, "열차 특정 실패(후보=${tracked.candidates.size})")
-                    return
-                }
-                trips.save(tracked, now)
+                // 전광판·노선 어디에도 없음 — **LOST로 내리지 않고 "위치 확인 중"을 유지한다**
+                // (오너 결정 2026-10-01 "한번 경로가 잡힌 상태에서 끊기지만 않으면 된다", API.md v0.14).
+                // 실측: 밤 배차(6~10분)에 플랫폼에서 시작하면 2분 안 도착 열차가 없어 1분 만에 LOST가 났다
+                // (2026-10-01 21:48·21:50 "열차 특정 실패(후보=0)"). 후보 수집은 위에서 매 틱 계속되므로
+                // 열차가 들어오면 그대로 잡힌다. 이미 LOST였던 트립(이전 규칙)도 여기서 TRACKING으로 되돌린다.
+                // 오래 못 잡으면 updated_at을 올리지 않아 잊힌 트립 자동 정리(STALE_AFTER) 시계는 살려 둔다
+                val unseenFor = Duration.between(tracked.lastSeenAt ?: tracked.legStartedAt, now)
+                trips.save(tracked.copy(phase = TripPhase.TRACKING), now, touch = unseenFor <= IDENTIFY_TIMEOUT)
                 return
             }
             tracked = tracked.copy(btrainNo = found.trainNo, phase = TripPhase.TRACKING)
@@ -231,7 +231,10 @@ class TripTrackingScheduler(
                 return
             }
             if (wasLost) {
-                return // 예전 규칙으로 LOST가 된 트립 — 재목격만 기다린다 (저장 없이 정리 시계 유지)
+                // 예전 규칙으로 LOST가 된 특정 트립 — 끊지 않는다(v0.14): 추적 중 + 실시간 정보 없음으로 되돌린다.
+                // 정리 시계는 살려 둔다(touch=false)
+                trips.save(tracked.copy(phase = TripPhase.TRACKING, realtimeAvailable = false), now, touch = false)
+                return
             }
             // **한번 특정된 트립은 유저가 요청하지 않는 이상 끊지 않는다** (오너 결정 2026-09-30):
             // 목격이 멈추면 LOST로 내리지 않고 "실시간 정보 없음"으로 알리며 마지막 값(정거장·역명)을
@@ -331,13 +334,6 @@ class TripTrackingScheduler(
         log.info("구간 하차 — trip={} leg={} phase={}", trip.tripId, trip.legIndex, phase)
     }
 
-    /** 특정 전 실패에만 쓴다 — 특정된 뒤에는 끊지 않는다 (오너 결정 2026-09-30) */
-    private fun markLost(trip: Trip, now: LocalDateTime, reason: String) {
-        log.warn("트립 LOST — trip={} leg={}: {}", trip.tripId, trip.legIndex, reason)
-        // 위치 정보는 전부 비운다 — 끊긴 채 낡은 역명을 보여주지 않는다 (NFR-03)
-        trips.save(trip.copy(phase = TripPhase.LOST, remainingStops = null, currentStop = null), now)
-    }
-
     /**
      * 발송 순서는 "로그 선기록 → 발송 → delivered 갱신, 실패 시 로그 롤백" —
      * PushNotificationScheduler와 동일 불변식 (크래시 시에도 초과 발송 없음)
@@ -386,9 +382,8 @@ class TripTrackingScheduler(
 
     companion object {
         /**
-         * 특정 전 무목격 제한 — 마지막 목격(없으면 구간 시작) 후 이 시간 안에 전광판·노선
-         * 어디서든 열차가 보여야 한다. 후보 재수집·LOST 복구 루프가 있어 LOST는 종착이
-         * 아니므로 짧게 실패를 알리는 쪽을 택했다 (오너 결정 2026-09-16: 15분 → 1분)
+         * 특정 전 무목격 — 이 시간을 넘기면 updated_at을 올리지 않는다(잊힌 트립 자동 정리용).
+         * 예전엔 이 시점에 LOST로 내렸지만 경로가 잡힌 트립은 끊지 않기로 했다 (오너 결정 2026-10-01, v0.14)
          */
         private val IDENTIFY_TIMEOUT: Duration = Duration.ofMinutes(1)
 

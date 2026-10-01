@@ -214,14 +214,26 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
-    fun `특정 타임아웃은 LOST다 — 어느 열차인지 모르는 채 아는 척하지 않는다`() {
-        insertTrip(candidates = emptyList()) // 후보 없음 — 특정 불가
+    fun `경로가 잡힌 트립은 특정 전에 오래 못 봐도 LOST로 내리지 않는다 — 위치 확인 중 유지`() {
+        // 2026-10-01 21:48·21:50 실측: 밤 배차에 플랫폼에서 시작하자 1분 만에 "열차 특정 실패(후보=0)" LOST
+        insertTrip(candidates = emptyList()) // 후보 없음 — 아직 열차가 안 들어왔다
         trains["당산"] = emptyList()
         clock.advance(Duration.ofMinutes(16))
         scheduler().tick()
-        val lost = trips.find("trip-1")!!
-        assertEquals(TripPhase.LOST, lost.phase)
-        assertNull(lost.remainingStops)
+        val waiting = trips.find("trip-1")!!
+        assertEquals(TripPhase.TRACKING, waiting.phase)
+        assertNull(waiting.remainingStops) // 숫자는 지어내지 않는다 (NFR-03)
+    }
+
+    @Test
+    fun `이전 규칙으로 LOST가 된 트립은 다음 틱에 추적 중으로 돌아온다`() {
+        insertTrip(candidates = emptyList())
+        trips.save(trips.find("trip-1")!!.copy(phase = TripPhase.LOST), LocalDateTime.now(clock))
+        trains["당산"] = emptyList()
+
+        scheduler().tick()
+
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
     }
 
     @Test
@@ -274,12 +286,12 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
-    fun `특정 실패 LOST도 후보가 하차역에 나타나면 특정되어 복구된다`() {
+    fun `오래 못 잡아도 끊기지 않고 후보가 하차역에 나타나면 특정된다`() {
         insertTrip() // 후보 9027 — 아직 하차역 조회 범위 밖
         trains["당산"] = emptyList()
-        clock.advance(Duration.ofMinutes(16)) // IDENTIFY_TIMEOUT 초과
+        clock.advance(Duration.ofMinutes(16)) // IDENTIFY_TIMEOUT 초과 — 예전엔 LOST
         scheduler().tick()
-        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
 
         trains["당산"] = listOf(train("9027", message = "[4]번째 전역 (선유도)"))
         scheduler().tick()
@@ -290,16 +302,16 @@ class TripTrackingSchedulerTest {
     }
 
     @Test
-    fun `복구되지 못한 LOST는 updated_at이 묶여 있어 자동 정리된다`() {
+    fun `끝내 못 잡은 트립은 끊지 않되 updated_at이 묶여 있어 자동 정리된다`() {
         insertTrip(candidates = emptyList())
         trains["당산"] = emptyList()
         clock.advance(Duration.ofMinutes(16))
-        scheduler().tick() // LOST
+        scheduler().tick()
 
-        // LOST로 머무는 동안 폴링이 계속 돌아도 updated_at을 갱신하지 않는다
+        // 무목격이 길어지면 폴링이 계속 돌아도 updated_at을 갱신하지 않는다 (v0.14 — LOST 대신)
         clock.advance(Duration.ofHours(3))
         scheduler().tick()
-        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
 
         clock.advance(Duration.ofHours(4)) // 두절 시점 기준 STALE_AFTER(6시간) 초과
         scheduler().tick()
@@ -363,10 +375,10 @@ class TripTrackingSchedulerTest {
         scheduler().tick()
         assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
 
-        trains.line("9호선", emptyList()) // 노선에서도 사라짐 — 마지막 목격 기준으로 타임아웃
+        trains.line("9호선", emptyList()) // 노선에서도 사라져도 끊지 않는다 (v0.14)
         clock.advance(Duration.ofMinutes(16))
         scheduler().tick()
-        assertEquals(TripPhase.LOST, trips.find("trip-1")!!.phase)
+        assertEquals(TripPhase.TRACKING, trips.find("trip-1")!!.phase)
     }
 
     @Test
@@ -488,7 +500,9 @@ class TripTrackingSchedulerTest {
 
         val saved = trips.find("riding-1")!!
         assertTrue(saved.candidates.isEmpty())
-        assertEquals(TripPhase.LOST, saved.phase) // 조용히 틀리느니 끊겼다고 말한다 (FR-706)
+        // 뒤차를 잡지 않되 끊지도 않는다 — "위치 확인 중"으로 남고 출구는 다시 잡기(v0.14)
+        assertEquals(TripPhase.TRACKING, saved.phase)
+        assertNull(saved.remainingStops)
     }
 }
 
